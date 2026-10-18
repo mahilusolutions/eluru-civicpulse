@@ -9,6 +9,7 @@ Campaign operations platform for **Eluru Mayor** — booth/ward voter outreach, 
 | `civicpulse/` | React frontend (CRA + Tailwind) |
 | `civicpulse-backend/` | Express API + SQLite + PDF/OCR ingest |
 | `voter_data_eluru/` | Eluru AC draft roll PDFs (parts 1–247) |
+| `eluru_voters_data_ocr_extraction/` | Standalone OCR upload UI (port **2000**, PM2) |
 | `deploy/` | Nginx config + PM2 + deploy shell scripts |
 
 ## Stack
@@ -57,12 +58,25 @@ From the backend:
 ```bash
 cd civicpulse-backend
 npm run ingest:pdfs          # register PDFs in SQLite
-npm run ocr:all              # OCR parts that still need electors (slow)
-npm run ocr:part -- --part=1 # OCR one part
+npm run ocr:extract          # PDF → voter_data_eluru/ocr_extract_data/part-N.json
+npm run ocr:extract:one      # OCR part 1 only (test)
+npm run ocr:all              # OCR into DB (legacy path)
 npm run db:show              # counts
 ```
 
-OCR needs Poppler + Tesseract installed on the machine. Prefer OCR **one part at a time** on smaller VPS plans.
+**OCR extract pipeline** (recommended):
+- Reads PDFs from `voter_data_eluru/`
+- Writes one JSON per PDF to `voter_data_eluru/ocr_extract_data/part-N.json`
+- **One PDF at a time** by default (`--pdfWorkers=1`)
+- **Parallel page OCR** inside each PDF (`--pageWorkers=3`, default)
+- Skip already-done parts unless `--force`
+
+```bash
+npm run ocr:extract -- --pageWorkers=4 --dpi=160
+npm run ocr:extract -- --part=5 --force
+```
+
+Needs Poppler (`pdftoppm`) + Tesseract on the machine.
 
 ## Useful backend scripts
 
@@ -74,6 +88,17 @@ OCR needs Poppler + Tesseract installed on the machine. Prefer OCR **one part at
 | `npm run ocr:all` | OCR remaining rolls |
 | `npm run ocr:clear-demo` | Clear demo voters |
 | `npm run db:show` | Print DB counts |
+
+## OCR extraction web app (port 2000)
+
+Upload PDFs in the browser → queue (1 PDF at a time) → parallel page OCR → JSON in `extracted_ocr_data/` with live SSE progress.
+
+```bash
+cd eluru_voters_data_ocr_extraction/code && npm install && npm start
+# or on VPS: pm2 start /var/www/eluru_voters_data_ocr_extraction/ecosystem.config.cjs
+```
+
+See [`eluru_voters_data_ocr_extraction/README.md`](eluru_voters_data_ocr_extraction/README.md).
 
 ## Deploy (VPS + Nginx + PM2)
 

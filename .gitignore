@@ -6,6 +6,14 @@
 !/civicpulse/
 !/civicpulse-backend/
 !/voter_data_eluru/
+!/eluru_voters_data_ocr_extraction/
+
+# OCR app runtime data (keep .gitkeep only)
+eluru_voters_data_ocr_extraction/uploaded_files/*
+!eluru_voters_data_ocr_extraction/uploaded_files/.gitkeep
+eluru_voters_data_ocr_extraction/extracted_ocr_data/*
+!eluru_voters_data_ocr_extraction/extracted_ocr_data/.gitkeep
+eluru_voters_data_ocr_extraction/code/node_modules/
 
 # Secrets / local machine (never commit)
 server_credentails.txt

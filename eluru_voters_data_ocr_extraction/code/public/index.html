@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Eluru OCR Extract</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,700;1,9..40,400&family=Instrument+Serif:ital@0;1&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="bg"></div>
+    <header class="top">
+      <div>
+        <p class="eyebrow">Eluru · Electoral rolls</p>
+        <h1>OCR Extraction</h1>
+      </div>
+      <div class="live-pill" id="livePill">Connecting…</div>
+    </header>
+
+    <main class="grid">
+      <section class="panel upload-panel">
+        <h2>Upload PDFs</h2>
+        <p class="hint">Files go to <code>uploaded_files/</code> and join the queue (one PDF at a time).</p>
+        <div id="dropzone" class="dropzone" tabindex="0">
+          <strong>Drop PDFs here</strong>
+          <span>or click to browse · multi-select OK</span>
+          <input id="fileInput" type="file" accept="application/pdf,.pdf" multiple hidden />
+        </div>
+        <div id="selectedList" class="selected-list" hidden></div>
+        <button id="uploadBtn" class="btn" type="button" disabled>Upload &amp; queue</button>
+        <div id="uploadProgressWrap" class="upload-progress" hidden>
+          <div class="progress-bar"><div id="uploadProgressFill"></div></div>
+          <div class="progress-meta">
+            <span id="uploadProgressText">0%</span>
+            <span id="uploadProgressBytes"></span>
+          </div>
+        </div>
+        <p id="uploadMsg" class="msg"></p>
+      </section>
+
+      <section class="panel stats-panel">
+        <h2>Queue</h2>
+        <div class="stat-row">
+          <div class="stat"><span id="statPending">0</span><label>Pending</label></div>
+          <div class="stat active"><span id="statActive">0</span><label>Active</label></div>
+          <div class="stat done"><span id="statDone">0</span><label>Done</label></div>
+          <div class="stat fail"><span id="statFailed">0</span><label>Failed</label></div>
+        </div>
+        <div class="active-box" id="activeBox">
+          <p class="muted">No active job</p>
+        </div>
+        <div class="progress-wrap">
+          <div class="progress-bar"><div id="progressFill"></div></div>
+          <div class="progress-meta">
+            <span id="progressText">—</span>
+            <span id="etaText">ETA —</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel live-panel">
+        <div class="live-head">
+          <div>
+            <h2>Live extracting content</h2>
+            <p class="hint" id="liveHint">Text appears here page-by-page as OCR finishes — you do not wait until the whole PDF is done.</p>
+          </div>
+          <span class="live-meta" id="liveMeta">Idle</span>
+        </div>
+        <pre id="liveTranscript" class="live-transcript" aria-live="polite">Waiting for OCR…</pre>
+      </section>
+
+      <section class="panel disk-panel">
+        <h2>On server (disk)</h2>
+        <p class="hint paths" id="diskPaths">
+          Uploaded: <code>uploaded_files/</code> · Extracted: <code>extracted_ocr_data/</code>
+        </p>
+        <div class="disk-actions">
+          <button id="recoverBtn" class="btn btn-secondary" type="button">Process waiting PDFs</button>
+        </div>
+        <div id="diskList" class="disk-list"></div>
+      </section>
+
+      <section class="panel jobs-panel">
+        <h2>Queue / processing</h2>
+        <p class="hint">Pending → Active (OCR) → Done (JSON written).</p>
+        <div id="jobList" class="job-list"></div>
+      </section>
+
+      <section class="panel results-panel">
+        <h2>Extracted files</h2>
+        <p class="hint">Full OCR text as <code>.json</code> (pages + full_text) and <code>.txt</code> in <code>extracted_ocr_data/</code>.</p>
+        <div id="resultList" class="result-list"></div>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
