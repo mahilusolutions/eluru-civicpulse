@@ -9,6 +9,7 @@ Campaign operations platform for **Eluru Mayor** — booth/ward voter outreach, 
 | `civicpulse/` | React frontend (CRA + Tailwind) |
 | `civicpulse-backend/` | Express API + SQLite + PDF/OCR ingest |
 | `voter_data_eluru/` | Eluru AC draft roll PDFs (parts 1–247) |
+| `deploy/` | Nginx config + PM2 + deploy shell scripts |
 
 ## Stack
 
@@ -74,11 +75,30 @@ OCR needs Poppler + Tesseract installed on the machine. Prefer OCR **one part at
 | `npm run ocr:clear-demo` | Clear demo voters |
 | `npm run db:show` | Print DB counts |
 
-## Deploy notes
+## Deploy (VPS + Nginx + PM2)
 
-- **Frontend:** static build (`npm run build`) → Nginx / Vercel / Hostinger
-- **Backend:** Node on a VPS (e.g. Hostinger KVM 2: 8 GB RAM) with PM2
-- **SQLite:** keep on persistent disk on the VPS; do not use ephemeral free PaaS disks
+Files live in `deploy/`:
+
+| File | Purpose |
+|------|---------|
+| `deploy/nginx/civicpulse.conf` | Nginx site (SPA + `/api` proxy) |
+| `deploy/ecosystem.config.cjs` | PM2 process for the API |
+| `deploy/setup-nginx.sh` | Install Nginx site |
+| `deploy/deploy.sh` | Install deps, build frontend, reload PM2 |
+| `deploy/pm2-start.sh` | Start/restart API only |
+
+On the server (clone to `/var/www/eluru-civicpulse`):
+
+```bash
+cd /var/www/eluru-civicpulse
+sudo bash deploy/setup-nginx.sh
+bash deploy/deploy.sh
+```
+
+- **Frontend build** → `civicpulse/build` (Nginx root)
+- **API** → PM2 `civicpulse-api` on `127.0.0.1:4000`
+- **Production API URL** → same-origin `/api` (set in `deploy.sh`)
+- **SQLite** → stays under `civicpulse-backend/data/`
 - **Secrets:** never commit `.env` or server passwords
 
 ## Local secrets (not in git)
