@@ -1,0 +1,20 @@
+{
+  "short_name": "CivicPulse",
+  "name": "CivicPulse by Mahilu Solutions",
+  "icons": [
+    {
+      "src": "favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    },
+    {
+      "src": "images/civicpulse-mark.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#0C1412",
+  "background_color": "#0C1412"
+}

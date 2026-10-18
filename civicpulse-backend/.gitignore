@@ -1,0 +1,8 @@
+node_modules/
+data/uploads/*
+!data/uploads/.gitkeep
+*.sqlite-shm
+*.sqlite-wal
+.env
+.DS_Store
+npm-debug.log*

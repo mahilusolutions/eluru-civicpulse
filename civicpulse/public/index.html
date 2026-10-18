@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" href="%PUBLIC_URL%/favicon.svg" type="image/svg+xml" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0F1B2D" />
+    <meta
+      name="description"
+      content="CivicPulse for Eluru by Mahilu Solutions — manage 247 booths, find voters, and run field work clearly."
+    />
+    <link rel="apple-touch-icon" href="%PUBLIC_URL%/images/civicpulse-mark.jpg" />
+    <link rel="manifest" href="%PUBLIC_URL%/manifest.json" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <title>CivicPulse Eluru · Mahilu Solutions</title>
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem('civicpulse_theme');
+          var theme =
+            saved === 'light' || saved === 'dark'
+              ? saved
+              : window.matchMedia('(prefers-color-scheme: dark)').matches
+                ? 'dark'
+                : 'light';
+          document.documentElement.setAttribute('data-theme', theme);
+          document.documentElement.classList.toggle('dark', theme === 'dark');
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body class="font-sans antialiased">
+    <noscript>You need to enable JavaScript to run CivicPulse.</noscript>
+    <div id="root"></div>
+  </body>
+</html>

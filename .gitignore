@@ -1,0 +1,37 @@
+# Track only CivicPulse app + Eluru voter PDFs
+/*
+!/.gitignore
+!/README.md
+!/civicpulse/
+!/civicpulse-backend/
+!/voter_data_eluru/
+
+# Secrets / local machine (never commit)
+server_credentails.txt
+**/server_credentails.txt
+**/.env
+**/.env.*
+!**/.env.example
+
+# Dependencies & build
+**/node_modules/
+**/build/
+**/dist/
+**/.cache/
+
+# Backend local runtime data
+civicpulse-backend/data/*.sqlite
+civicpulse-backend/data/*.sqlite-*
+civicpulse-backend/data/uploads/*
+!civicpulse-backend/data/uploads/.gitkeep
+civicpulse-backend/data/json/*
+!civicpulse-backend/data/json/.gitkeep
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
+npm-debug.log*
+yarn-error.log*
