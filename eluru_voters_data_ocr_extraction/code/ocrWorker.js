@@ -35,6 +35,25 @@ const PDFTOPPM =
     return 'pdftoppm';
   })();
 
+function isJunkElectorName(n) {
+  if (!n) return true;
+  const s = String(n).trim();
+  if (s.length < 3 || s.length > 80) return true;
+  // Roll header / footer OCR noise (not a person)
+  if (
+    /part\s*number|section\s*no|assembly|constituency|electoral|revision|polling|eluru|s01-?65|e-?roll|draft\s*roll|electors?\s*name|photo\s*available/i.test(
+      s
+    )
+  ) {
+    return true;
+  }
+  if (/^\d{1,3}[-–]\s*[A-Z]{2,}/i.test(s)) return true; // e.g. 65-ELURU…
+  // Must look like a person name (letters), not mostly digits/punctuation
+  const letters = (s.match(/[A-Za-z\u0C00-\u0C7F]/g) || []).length;
+  if (letters < 3) return true;
+  return false;
+}
+
 function cleanName(raw) {
   if (!raw) return null;
   let n = raw
@@ -44,14 +63,51 @@ function cleanName(raw) {
     .replace(/\bAvailable\b/gi, '')
     .trim();
   n = n.replace(/^[:\-.\s]+/, '').replace(/[:\-.\s]+$/, '');
-  if (n.length < 3 || n.length > 80) return null;
-  if (/^(assembly|constituency|section|electoral|part|revision|polling)/i.test(n)) return null;
+  if (isJunkElectorName(n)) return null;
   return n;
 }
 
-function parseEciOcrText(text, partNo) {
-  if (!text || !text.trim()) return [];
-  const normalized = text
+/** Normalize OCR EPIC token → uppercase ID (e.g. WI02171684). */
+function normalizeEpic(raw) {
+  if (!raw) return null;
+  let s = String(raw).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  // OCR often inserts O between letters and digits: WIO2426021 → WIO2426021 (valid) or WI O…
+  if (!/^[A-Z]{2,3}\d{6,9}$/.test(s)) return null;
+  if (s.length < 9 || s.length > 12) return null;
+  // Skip obvious non-EPIC noise
+  if (/^(PAGE|AGE|GENDER|HOUSE|PHOTO|ELURU)/.test(s)) return null;
+  return s;
+}
+
+function extractEpicsFromChunk(chunk) {
+  if (!chunk) return [];
+  const re = /\b([A-Za-z]{2,3}\d{6,9})\b/g;
+  const out = [];
+  let m;
+  while ((m = re.exec(chunk))) {
+    const epic = normalizeEpic(m[1]);
+    if (epic) out.push(epic);
+  }
+  return out;
+}
+
+/** Assign epics to the last N voters without an epic (card EPICs sit under each row). */
+function applyEpicsToTail(voters, epics) {
+  if (!epics?.length || !voters?.length) return;
+  const open = [];
+  for (let i = 0; i < voters.length; i += 1) {
+    if (!voters[i].epic) open.push(i);
+  }
+  const start = Math.max(0, open.length - epics.length);
+  for (let i = 0; i < epics.length; i += 1) {
+    const vi = open[start + i];
+    if (vi == null) break;
+    voters[vi].epic = epics[i];
+  }
+}
+
+function extractVotersFromChunk(chunk, partNo, serialStart) {
+  const normalized = chunk
     .replace(/\r/g, '\n')
     .replace(/[|]/g, 'I')
     .replace(/\u00a0/g, ' ')
@@ -97,6 +153,7 @@ function parseEciOcrText(text, partNo) {
   const count = Math.max(names.length, relations.length, houses.length, ages.length);
   const voters = [];
   const seen = new Set();
+  let serial = serialStart;
   for (let i = 0; i < count; i += 1) {
     const name = names[i];
     if (!name) continue;
@@ -109,7 +166,7 @@ function parseEciOcrText(text, partNo) {
     seen.add(key);
     voters.push({
       part_no: partNo,
-      serial_no: voters.length + 1,
+      serial_no: serial,
       epic: null,
       name,
       relation_type: rel.type || 'father',
@@ -120,6 +177,50 @@ function parseEciOcrText(text, partNo) {
       status: 'active',
       raw_ocr_text: `${name} | ${rel.name || ''} | ${house_no || ''} | ${ag.age || ''}`,
     });
+    serial += 1;
+  }
+  return voters;
+}
+
+function parseEciOcrText(text, partNo) {
+  if (!text || !text.trim()) return [];
+
+  // Process page-by-page: EPIC lines sit under each 3-card row (often before the next Name line)
+  const pages = String(text).split(/===== PAGE \d+ =====/i);
+  const voters = [];
+  let pendingEpics = [];
+
+  for (const page of pages) {
+    if (!page || !/Name\s*:/i.test(page)) {
+      // Epics-only fragment / header page
+      pendingEpics = pendingEpics.concat(extractEpicsFromChunk(page));
+      continue;
+    }
+
+    const firstNameIdx = page.search(/Name\s*:/i);
+    const early = page.slice(0, Math.max(0, firstNameIdx));
+    const body = page.slice(Math.max(0, firstNameIdx));
+    const earlyEpics = extractEpicsFromChunk(early);
+    const bodyEpics = extractEpicsFromChunk(body);
+
+    // Epics before first Name on this page belong to previous page's last cards
+    applyEpicsToTail(voters, pendingEpics.concat(earlyEpics));
+    pendingEpics = [];
+
+    const pageVoters = extractVotersFromChunk(body, partNo, voters.length + 1);
+    // Epics after Names on this page belong to this page's cards (OCR often misses early rows)
+    applyEpicsToTail(pageVoters, bodyEpics);
+    voters.push(...pageVoters);
+  }
+
+  applyEpicsToTail(voters, pendingEpics);
+
+  // Refresh raw_ocr_text to include EPIC when present
+  for (const v of voters) {
+    v.raw_ocr_text = `${v.epic || ''} | ${v.name} | ${v.relation_name || ''} | ${v.house_no || ''} | ${v.age || ''}`.replace(
+      /^\s*\|\s*/,
+      ''
+    );
   }
   return voters;
 }
@@ -376,6 +477,9 @@ async function ocrPdfToVoters(pdfPath, partNo, opts = {}) {
 }
 
 module.exports = {
+  isJunkElectorName,
+  normalizeEpic,
+  parseEciOcrText,
   ocrPdfToVoters,
   parseEciOcrText,
   partFromFilename,

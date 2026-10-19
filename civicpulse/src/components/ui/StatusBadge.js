@@ -8,15 +8,15 @@ const TONES = {
 };
 
 const LABELS = {
-  needs_import: 'Needs electors',
+  needs_import: 'Needs CSV',
   ready: 'Ready',
   done: 'Done',
   failed: 'Failed',
   error: 'Error',
-  queued: 'Queued',
+  queued: 'Waiting',
   ocr: 'Reading…',
   processing: 'Processing',
-  pending: 'Pending',
+  pending: 'Waiting',
   active: 'Active',
   resolved: 'Resolved',
   'in progress': 'In progress',

@@ -1,10 +1,8 @@
 /**
- * PM2 process file for CivicPulse API
+ * PM2 processes — CivicPulse API + OCR extract
  *
- * Usage (from repo root on the VPS):
  *   pm2 start deploy/ecosystem.config.cjs
- *   pm2 save
- *   pm2 startup
+ *   pm2 save && pm2 startup
  */
 const path = require('path');
 
@@ -24,9 +22,36 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: 4000,
+        OCR_EXTRACT_URL: 'http://127.0.0.1:2000',
+        OCR_UPLOAD_DIR: path.join(
+          APP_ROOT,
+          'eluru_voters_data_ocr_extraction',
+          'uploaded_files'
+        ),
       },
       error_file: '/var/log/civicpulse/api-error.log',
       out_file: '/var/log/civicpulse/api-out.log',
+      time: true,
+    },
+    {
+      name: 'eluru-ocr',
+      cwd: path.join(APP_ROOT, 'eluru_voters_data_ocr_extraction', 'code'),
+      script: 'server.js',
+      instances: 1,
+      exec_mode: 'fork',
+      autorestart: true,
+      watch: false,
+      max_memory_restart: '1024M',
+      env: {
+        NODE_ENV: 'production',
+        PORT: 2000,
+        OCR_PAGE_WORKERS: '3',
+        OCR_DPI: '160',
+        OCR_SAVE_DISK: '0',
+        OCR_PUBLIC_BASE: '/ocr',
+      },
+      error_file: '/var/log/civicpulse/ocr-error.log',
+      out_file: '/var/log/civicpulse/ocr-out.log',
       time: true,
     },
   ],

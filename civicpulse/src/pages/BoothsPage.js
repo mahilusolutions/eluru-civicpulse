@@ -80,7 +80,11 @@ export default function BoothsPage() {
 
   return (
     <section className="space-y-4">
-      <PageHeader title="Booths" description="All assembly parts — coverage and agents." />
+      <PageHeader
+        eyebrow="Field"
+        title="Booths"
+        description="Every part booth — voters, agents, and visit coverage."
+      />
 
       <FilterBar>
         <FilterSearch value={query} onChange={setQuery} placeholder="Filter part, area, agent…" />
@@ -105,7 +109,9 @@ export default function BoothsPage() {
         rowKey="part_no"
         loading={loading}
         emptyTitle="No booths yet"
-        emptyDescription="Ingest PDFs from Data to create parts."
+        emptyDescription="Upload a roll PDF from Data to create the first booth."
+        emptyActionLabel="Go to Data"
+        emptyActionTo="/app/data"
         pagination={{
           page: pager.page,
           pageCount: pager.pageCount,

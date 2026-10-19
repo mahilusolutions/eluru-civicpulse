@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start or restart CivicPulse API under PM2 only
+# Start / restart CivicPulse API + OCR under PM2
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -15,15 +15,9 @@ if ! command -v pm2 >/dev/null 2>&1; then
   npm install -g pm2
 fi
 
-if pm2 describe civicpulse-api >/dev/null 2>&1; then
-  pm2 restart civicpulse-api --update-env
-else
-  pm2 start "$ECOSYSTEM"
-fi
-
+pm2 startOrReload "$ECOSYSTEM" --update-env
 pm2 save
-# Enable boot persistence (safe to re-run)
 pm2 startup systemd -u root --hp /root 2>/dev/null | tail -n 1 | bash || true
 
 pm2 status
-echo "API logs: pm2 logs civicpulse-api"
+echo "Logs: pm2 logs civicpulse-api | pm2 logs eluru-ocr"

@@ -2,29 +2,34 @@
   "name": "civicpulse-backend",
   "version": "1.0.0",
   "private": true,
-  "description": "CivicPulse API — Express + SQLite + PDF ingest/OCR for Eluru rolls",
+  "description": "CivicPulse API — Express + Prisma + PostgreSQL (Eluru)",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js",
-    "ingest:pdfs": "node scripts/bulkIngest.js",
-    "ocr:all": "node scripts/ocrAll.js",
-    "ocr:part": "node scripts/ocrAll.js --part=1",
-    "ocr:clear-demo": "node scripts/clearDemo.js",
-    "db:show": "node scripts/showDb.js"
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push"
+  },
+  "prisma": {
+    "schema": "prisma/schema"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
-    "better-sqlite3": "^13.0.3",
+    "@prisma/client": "^6.19.0",
     "cors": "^2.8.6",
+    "dotenv": "^16.6.1",
     "express": "^5.3.0",
     "multer": "^2.4.0",
-    "pdf-parse": "^2.4.5",
+    "pg": "^8.23.1",
     "uuid": "^14.0.3"
   },
   "devDependencies": {
-    "nodemon": "^3.1.14"
+    "prisma": "^6.19.0"
+  },
+  "allowScripts": {
+    "@prisma/client@6.19.0": true,
+    "prisma@6.19.0": true,
+    "@prisma/engines@6.19.0": true
   }
 }

@@ -66,17 +66,21 @@ export default function MapPage() {
 
   return (
     <section className="space-y-4">
-      <PageHeader title="Map" description="Booth coverage across Eluru parts." />
+      <PageHeader
+        eyebrow="Geography"
+        title="Map"
+        description="Booth coverage at a glance across Eluru parts."
+      />
       <AlertBanner tone="danger">{error}</AlertBanner>
 
       {!loading && booths?.length ? (
-        <Panel className="relative min-h-[200px] overflow-hidden p-4">
+        <Panel className="relative min-h-[200px] overflow-hidden p-4 sm:p-5">
           <div className="flex flex-wrap gap-2">
             {booths.slice(0, 60).map((b) => (
               <span
                 key={b.part_no}
                 title={`Part ${b.part_no} · ${Math.round(b.coverage_pct || 0)}%`}
-                className="inline-flex h-9 min-w-9 items-center justify-center rounded-lg border border-[var(--line)] bg-[var(--bg)] px-2 text-xs font-bold text-[var(--ink)]"
+                className="inline-flex h-9 min-w-9 items-center justify-center rounded-xl border border-[var(--line)] bg-[var(--bg)] px-2 text-xs font-bold text-[var(--ink)] transition hover:border-[var(--brand)] hover:text-[var(--brand)]"
               >
                 {b.part_no}
               </span>
@@ -97,7 +101,10 @@ export default function MapPage() {
         rows={pager.rows}
         rowKey="part_no"
         loading={loading}
-        emptyTitle="No booths on map"
+        emptyTitle="No booths on map yet"
+        emptyDescription="Upload voter rolls so booth parts appear on the map."
+        emptyActionLabel="Go to Data"
+        emptyActionTo="/app/data"
         pagination={{
           page: pager.page,
           pageCount: pager.pageCount,

@@ -1,0 +1,113 @@
+// CivicPulse — shared Prisma config (multi-schema Postgres)
+//   public  = application tables
+//   voterdb = OCR / electoral-roll extraction tables
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["public", "voterdb"]
+}
+
+// ---------- shared enums (used by both schemas) ----------
+
+enum BoothStatus {
+  pending
+  active
+  complete
+  inactive
+
+  @@map("booth_status")
+  @@schema("public")
+}
+
+enum VoterStatus {
+  active
+  visited
+  callback
+  shifted
+  deceased
+  duplicate
+  inactive
+
+  @@map("voter_status")
+  @@schema("voterdb")
+}
+
+enum GenderCode {
+  M
+  F
+  O
+  U
+
+  @@map("gender_code")
+  @@schema("voterdb")
+}
+
+enum RelationType {
+  father
+  mother
+  husband
+  other
+
+  @@map("relation_type")
+  @@schema("voterdb")
+}
+
+enum SupportLean {
+  strong_yes
+  lean_yes
+  undecided
+  lean_no
+  strong_no
+  unknown
+
+  @@map("support_lean")
+  @@schema("voterdb")
+}
+
+enum ParseStatus {
+  queued
+  ocr
+  needs_import
+  ready
+  failed
+
+  @@map("parse_status")
+  @@schema("voterdb")
+}
+
+enum IssuePriority {
+  Low
+  Medium
+  High
+  Critical
+
+  @@map("issue_priority")
+  @@schema("public")
+}
+
+enum IssueStatus {
+  Open
+  In_progress @map("In progress")
+  Resolved
+  Closed
+
+  @@map("issue_status")
+  @@schema("public")
+}
+
+enum OutreachType {
+  door
+  phone
+  whatsapp
+  sms
+  event
+  other
+
+  @@map("outreach_type")
+  @@schema("public")
+}

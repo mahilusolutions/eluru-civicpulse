@@ -46,7 +46,7 @@ export default function HouseholdsPage() {
       },
       {
         key: 'head_name',
-        header: 'Sample name',
+        header: 'Household name',
         accessor: (r) => r.head_name || '—',
       },
       {
@@ -63,7 +63,11 @@ export default function HouseholdsPage() {
 
   return (
     <section className="space-y-4">
-      <PageHeader title="Households" description="Electors grouped by house number." />
+      <PageHeader
+        eyebrow="People"
+        title="Households"
+        description="Families grouped by house number for door-to-door work."
+      />
       <FilterBar>
         <FilterSelect label="Part" value={part} onChange={setPart} options={partOptions} />
       </FilterBar>
@@ -74,7 +78,9 @@ export default function HouseholdsPage() {
         rowKey={(r) => `${r.part_no}-${r.house_no}`}
         loading={loading}
         emptyTitle="No households yet"
-        emptyDescription="Load voters with house numbers first."
+        emptyDescription="Upload voter rolls first so house numbers appear here."
+        emptyActionLabel="Go to Data"
+        emptyActionTo="/app/data"
         pagination={{
           page: pager.page,
           pageCount: pager.pageCount,

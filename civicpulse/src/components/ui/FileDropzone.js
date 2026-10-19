@@ -40,10 +40,10 @@ export default function FileDropzone({
         setDragOver(false);
         handleFiles(e.dataTransfer.files);
       }}
-      className={`relative flex min-h-[120px] cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed px-4 py-5 text-center transition ${
+      className={`relative flex min-h-[132px] cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed px-4 py-6 text-center shadow-soft transition ${
         dragOver
           ? 'border-[var(--brand)] bg-[var(--brand)]/5'
-          : 'border-[var(--line)] bg-[var(--bg-elevated)] hover:border-[var(--brand)]/40'
+          : 'border-[var(--line)] bg-[var(--bg-elevated)] hover:border-[var(--brand)]/50'
       } ${disabled || busy ? 'pointer-events-none opacity-60' : ''}`}
     >
       <input

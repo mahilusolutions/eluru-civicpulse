@@ -1,44 +1,30 @@
 # CivicPulse Backend
 
-Standalone Node.js API for CivicPulse (Eluru Mayor campaign ops).
+Express API + Prisma + PostgreSQL for CivicPulse (Eluru).
 
-## Stack
+## Schemas
 
-- Express
-- SQLite (`better-sqlite3`)
-- Multer PDF uploads
-- Optional OCR via Poppler + Tesseract
+- `public` — app tables (booths, issues, outreach, …)
+- `voterdb` — OCR extraction (`extracted_documents`, `electors`, `roll_files`)
 
-## Setup
+## Production
+
+Deploy from repo root:
 
 ```bash
-cd civicpulse-backend
+bash deploy/deploy.sh
+```
+
+API is served behind nginx at `/api/`. OCR extract UI is at `/ocr/`.
+
+## Local
+
+```bash
+cp .env.example .env   # set DATABASE_URL
 npm install
+npm run db:generate
+npm run db:push
 npm start
 ```
 
 API: `http://localhost:4000/api`
-
-## Scripts
-
-| Command | What it does |
-|---------|----------------|
-| `npm start` | Run API |
-| `npm run dev` | API with nodemon |
-| `npm run ingest:pdfs` | Register PDFs from `../voter_data_eluru` |
-| `npm run ocr:all` | OCR parts that need electors |
-| `npm run ocr:clear-demo` | Clear demo voters |
-| `npm run db:show` | Print DB counts |
-
-## Frontend
-
-In `../civicpulse`:
-
-```env
-REACT_APP_API_URL=http://localhost:4000/api
-```
-
-```bash
-cd ../civicpulse
-npm start
-```

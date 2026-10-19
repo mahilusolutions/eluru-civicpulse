@@ -114,13 +114,13 @@ function SidebarPanel({ onNavigate, forceExpanded = false }) {
                     to={item.path}
                     onClick={onNavigate}
                     className={({ isActive }) =>
-                      `flex items-center rounded-lg text-[13px] font-medium transition ${
+                      `flex items-center rounded-xl text-[13px] font-semibold transition duration-150 ${
                         isCollapsed
                           ? 'mx-auto h-9 w-9 justify-center'
                           : 'gap-2.5 px-2.5 py-2'
                       } ${
                         isActive
-                          ? 'bg-[var(--bg-muted)] text-[var(--brand)]'
+                          ? 'bg-[var(--brand)]/10 text-[var(--brand)] shadow-sm ring-1 ring-[var(--brand)]/20'
                           : 'text-[var(--ink-soft)] hover:bg-[var(--bg-muted)] hover:text-[var(--ink)]'
                       }`
                     }

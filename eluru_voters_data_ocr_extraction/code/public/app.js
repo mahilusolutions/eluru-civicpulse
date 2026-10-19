@@ -1,5 +1,9 @@
 const $ = (id) => document.getElementById(id);
 
+// Behind nginx at /ocr/ — set by server window.__OCR_BASE__ (default "")
+const BASE = String(window.__OCR_BASE__ || '').replace(/\/$/, '');
+const api = (path) => `${BASE}${path.startsWith('/') ? path : `/${path}`}`;
+
 const state = {
   jobs: [],
   stats: { pending: 0, active: 0, done: 0, failed: 0 },
@@ -152,7 +156,7 @@ function escapeHtml(s) {
 }
 
 async function refreshJobs() {
-  const res = await fetch('/api/jobs');
+  const res = await fetch(api('/api/jobs'));
   const data = await res.json();
   setStats(data.stats);
   state.jobs = data.jobs || [];
@@ -161,7 +165,7 @@ async function refreshJobs() {
 }
 
 async function refreshResults() {
-  const res = await fetch('/api/results');
+  const res = await fetch(api('/api/results'));
   const data = await res.json();
   const el = $('resultList');
   const results = data.results || [];
@@ -176,9 +180,9 @@ async function refreshResults() {
         r.text_length != null ? `${r.text_length.toLocaleString()} chars` : null,
         r.voter_count != null ? `${r.voter_count} voters (bonus)` : null,
       ].filter(Boolean);
-      const jsonHref = `/api/results/file/${encodeURIComponent(r.file)}`;
+      const jsonHref = api(`/api/results/file/${encodeURIComponent(r.file)}`);
       const txtLink = r.txt_file
-        ? ` · <a class="link" href="/api/results/file/${encodeURIComponent(r.txt_file)}" target="_blank" rel="noopener">TXT</a>`
+        ? ` · <a class="link" href="${api(`/api/results/file/${encodeURIComponent(r.txt_file)}`)}" target="_blank" rel="noopener">TXT</a>`
         : '';
       return `<div class="result">
         <div>
@@ -193,7 +197,7 @@ async function refreshResults() {
 
 function connectSSE() {
   const pill = $('livePill');
-  const es = new EventSource('/api/events');
+  const es = new EventSource(api('/api/events'));
   es.addEventListener('hello', () => {
     pill.textContent = 'Live';
     pill.classList.add('on');
@@ -268,7 +272,7 @@ function renderDisk() {
 }
 
 async function refreshDisk() {
-  const res = await fetch('/api/disk');
+  const res = await fetch(api('/api/disk'));
   const data = await res.json();
   state.paths = data.paths;
   state.diskFiles = data.files || [];
@@ -365,7 +369,7 @@ function setupUpload() {
   function uploadWithProgress(formData) {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      xhr.open('POST', '/api/upload');
+      xhr.open('POST', api('/api/upload'));
       xhr.upload.onprogress = (e) => {
         if (!e.lengthComputable) {
           msg.textContent = 'Uploading…';
@@ -408,7 +412,7 @@ function setupUpload() {
     hideUploadProgress();
 
     try {
-      const checkRes = await fetch('/api/check-existing', {
+      const checkRes = await fetch(api('/api/check-existing'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ names: state.selectedFiles.map((f) => f.name) }),
@@ -455,7 +459,7 @@ function setupRecover() {
   btn.addEventListener('click', async () => {
     btn.disabled = true;
     try {
-      const res = await fetch('/api/recover', { method: 'POST' });
+      const res = await fetch(api('/api/recover'), { method: 'POST' });
       const data = await res.json();
       if (!data.success) throw new Error(data.message || 'Recover failed');
       state.diskFiles = data.files || [];

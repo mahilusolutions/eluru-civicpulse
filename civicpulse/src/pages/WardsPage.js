@@ -58,7 +58,11 @@ export default function WardsPage() {
 
   return (
     <section className="space-y-4">
-      <PageHeader title="Wards" description="Municipal wards mapped to booth parts." />
+      <PageHeader
+        eyebrow="Geography"
+        title="Wards"
+        description="City wards linked to booth parts for planning."
+      />
       <FilterBar>
         <FilterSearch value={query} onChange={setQuery} placeholder="Filter ward or part…" />
       </FilterBar>
@@ -69,6 +73,9 @@ export default function WardsPage() {
         rowKey="id"
         loading={loading}
         emptyTitle="No wards yet"
+        emptyDescription="Wards will show here once they are set up for Eluru."
+        emptyActionLabel="See booths"
+        emptyActionTo="/app/booths"
         pagination={{
           page: pager.page,
           pageCount: pager.pageCount,

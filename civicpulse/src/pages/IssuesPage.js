@@ -120,9 +120,13 @@ export default function IssuesPage() {
 
   return (
     <section className="space-y-4">
-      <PageHeader title="Issues" description="Track civic tickets by booth." />
+      <PageHeader
+        eyebrow="Civic"
+        title="Issues"
+        description="Record local problems by booth and mark them resolved."
+      />
 
-      <Panel className="p-4">
+      <Panel className="p-4 sm:p-5">
         <form onSubmit={onSubmit} className="grid gap-3 sm:grid-cols-2">
           <Field label="Title" className="sm:col-span-2">
             <input
@@ -176,7 +180,8 @@ export default function IssuesPage() {
         rows={pager.rows}
         rowKey="id"
         loading={loading}
-        emptyTitle="No issues"
+        emptyTitle="No issues yet"
+        emptyDescription="Use the form above to log the first civic problem."
         pagination={{
           page: pager.page,
           pageCount: pager.pageCount,

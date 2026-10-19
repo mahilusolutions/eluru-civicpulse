@@ -77,9 +77,13 @@ export default function TeamPage() {
 
   return (
     <section className="space-y-4">
-      <PageHeader title="Team" description="Coordinators, agents, and volunteers." />
+      <PageHeader
+        eyebrow="People"
+        title="Team"
+        description="Add coordinators, booth agents, and volunteers."
+      />
 
-      <Panel className="p-4">
+      <Panel className="p-4 sm:p-5">
         <form onSubmit={onSubmit} className="grid gap-3 sm:grid-cols-4">
           <Field label="Name">
             <input
@@ -125,7 +129,8 @@ export default function TeamPage() {
         rows={pager.rows}
         rowKey="id"
         loading={loading}
-        emptyTitle="No team members"
+        emptyTitle="No team members yet"
+        emptyDescription="Add your first coordinator or booth agent using the form above."
         pagination={{
           page: pager.page,
           pageCount: pager.pageCount,

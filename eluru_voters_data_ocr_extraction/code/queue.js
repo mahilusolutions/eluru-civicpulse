@@ -3,6 +3,7 @@ const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const { ocrPdfToVoters, partFromFilename } = require('./ocrWorker');
 const { broadcast } = require('./events');
+const { saveExtractionToDb, markRollProgress, markRollFailed } = require('./saveToDb');
 
 const PAGE_WORKERS = Number(process.env.OCR_PAGE_WORKERS) || 3;
 const DPI = Number(process.env.OCR_DPI) || 160;
@@ -100,9 +101,11 @@ function createQueue({ uploadedDir, extractedDir }) {
         job.stage = 'render';
         broadcast('job_started', publicJob(job));
         emitStats();
+        markRollProgress(job.filename, { stage: 'render' }).catch(() => {});
 
         try {
           const partNo = job.part_no != null ? job.part_no : Date.now() % 100000;
+          let lastDbProgress = 0;
           const result = await ocrPdfToVoters(job.absPath, partNo, {
             dpi: DPI,
             pageWorkers: PAGE_WORKERS,
@@ -112,6 +115,17 @@ function createQueue({ uploadedDir, extractedDir }) {
               job.page = p.page || 0;
               job.total_pages = p.total || 0;
               job.eta_seconds = p.etaSeconds;
+              // Throttle DB progress writes (every page or every 3s)
+              const now = Date.now();
+              if (p.page && (p.page !== lastDbProgress || now - (job._lastDbAt || 0) > 3000)) {
+                lastDbProgress = p.page;
+                job._lastDbAt = now;
+                markRollProgress(job.filename, {
+                  page: p.page,
+                  total: p.total,
+                  stage: p.stage || 'ocr',
+                }).catch(() => {});
+              }
               if (p.pageVoters && p.pageVoters.length) {
                 job.recent_voters = [...p.pageVoters, ...job.recent_voters].slice(0, 40);
                 broadcast('voters_partial', {
@@ -178,20 +192,34 @@ function createQueue({ uploadedDir, extractedDir }) {
             // Bonus: structured voters when the PDF looks like an ECI roll
             voters: result.voters,
           };
-          fs.writeFileSync(outPath, JSON.stringify(payload, null, 2), 'utf8');
-          fs.writeFileSync(txtPath, result.full_text || '', 'utf8');
-          // Convenience alias for roll PDFs with ENG-N in the name
-          if (job.part_no != null) {
-            fs.writeFileSync(
-              path.join(extractedDir, `part-${job.part_no}.json`),
-              JSON.stringify(payload, null, 2),
-              'utf8'
-            );
-            fs.writeFileSync(
-              path.join(extractedDir, `part-${job.part_no}.txt`),
-              result.full_text || '',
-              'utf8'
-            );
+          // Optional disk backup (default on). Set OCR_SAVE_DISK=0 to DB-only.
+          const saveDisk = process.env.OCR_SAVE_DISK !== '0';
+          if (saveDisk) {
+            fs.writeFileSync(outPath, JSON.stringify(payload, null, 2), 'utf8');
+            fs.writeFileSync(txtPath, result.full_text || '', 'utf8');
+            if (job.part_no != null) {
+              fs.writeFileSync(
+                path.join(extractedDir, `part-${job.part_no}.json`),
+                JSON.stringify(payload, null, 2),
+                'utf8'
+              );
+              fs.writeFileSync(
+                path.join(extractedDir, `part-${job.part_no}.txt`),
+                result.full_text || '',
+                'utf8'
+              );
+            }
+          }
+
+          // Primary store: PostgreSQL voterdb on the server
+          try {
+            const dbResult = await saveExtractionToDb(payload, { storagePath: job.absPath });
+            job.db_document_id = dbResult.documentId;
+            job.stage = 'done';
+          } catch (dbErr) {
+            console.error('DB save failed (disk backup kept if enabled):', dbErr.message);
+            job.error = `DB save: ${String(dbErr.message).slice(0, 200)}`;
+            // Still mark OCR done if disk written; Data page can re-import
           }
 
           job.status = 'done';
@@ -203,7 +231,7 @@ function createQueue({ uploadedDir, extractedDir }) {
           job.eta_seconds = 0;
           job.result_file = outName;
           job.recent_voters = result.voters.slice(0, 40);
-          job.stage = 'done';
+          if (!job.stage) job.stage = 'done';
           broadcast('job_completed', publicJob(job));
           broadcast('disk_status', { files: listDiskFiles() });
         } catch (err) {
@@ -211,6 +239,7 @@ function createQueue({ uploadedDir, extractedDir }) {
           job.finished_at = new Date().toISOString();
           job.error = String(err.message || err).slice(0, 500);
           job.stage = 'failed';
+          markRollFailed(job.filename, job.error).catch(() => {});
           broadcast('job_failed', publicJob(job));
           broadcast('disk_status', { files: listDiskFiles() });
         }

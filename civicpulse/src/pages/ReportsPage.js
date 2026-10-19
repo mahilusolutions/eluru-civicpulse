@@ -45,7 +45,11 @@ export default function ReportsPage() {
 
   return (
     <section className="space-y-4">
-      <PageHeader title="Reports" description="Download CSV exports for meetings." />
+      <PageHeader
+        eyebrow="Exports"
+        title="Reports"
+        description="Download CSV files for meetings and offline sharing."
+      />
       <AlertBanner tone="danger">{error}</AlertBanner>
       {last ? (
         <AlertBanner tone="success">
@@ -55,7 +59,10 @@ export default function ReportsPage() {
 
       <div className="grid gap-3 sm:grid-cols-2">
         {TYPES.map((t) => (
-          <Panel key={t.id} className="flex items-center justify-between gap-3 p-4">
+          <Panel
+            key={t.id}
+            className="flex items-center justify-between gap-3 p-4 transition hover:-translate-y-0.5 sm:p-5"
+          >
             <div className="min-w-0">
               <p className="font-bold text-[var(--ink)]">{t.label}</p>
               <p className="text-xs text-[var(--muted)]">{t.hint}</p>

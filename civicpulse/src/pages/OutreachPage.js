@@ -10,6 +10,14 @@ import Panel, { btnPrimary, Field, inputClass } from '../components/ui/Panel';
 import { useApi } from '../hooks/useApi';
 import { usePagination } from '../hooks/usePagination';
 
+function friendlyError(msg) {
+  if (!msg) return '';
+  if (/prisma|invocation|OutreachType/i.test(msg)) {
+    return 'Could not save. Check the voter and try again.';
+  }
+  return String(msg).slice(0, 160);
+}
+
 export default function OutreachPage() {
   const { role } = useAuth();
   const { data: rows, loading, error, reload } = useApi(() => getOutreach(), []);
@@ -18,6 +26,7 @@ export default function OutreachPage() {
   const [pageSize, setPageSize] = useState(25);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
+  const [formError, setFormError] = useState('');
   const [form, setForm] = useState({
     voter_id: '',
     type: 'Visit',
@@ -43,17 +52,18 @@ export default function OutreachPage() {
     if (!form.voter_id) return;
     setSaving(true);
     setMsg('');
+    setFormError('');
     try {
       await createOutreach({
         ...form,
         voter_id: Number(form.voter_id),
         created_by_role: role,
       });
-      setMsg('Saved.');
+      setMsg('Visit logged.');
       setForm((f) => ({ ...f, notes: '' }));
-      reload();
+      reload({ silent: true });
     } catch (err) {
-      setMsg(err.message);
+      setFormError(friendlyError(err.message));
     } finally {
       setSaving(false);
     }
@@ -92,9 +102,13 @@ export default function OutreachPage() {
 
   return (
     <section className="space-y-4">
-      <PageHeader title="Outreach" description="Log visits and call outcomes." />
+      <PageHeader
+        eyebrow="Field"
+        title="Outreach"
+        description="Log door visits and call outcomes for each voter."
+      />
 
-      <Panel className="p-4">
+      <Panel className="p-4 sm:p-5">
         <form onSubmit={onSubmit} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <Field label="Voter" className="sm:col-span-2">
             <select
@@ -103,7 +117,7 @@ export default function OutreachPage() {
               onChange={(e) => setForm((f) => ({ ...f, voter_id: e.target.value }))}
               className={inputClass}
             >
-              <option value="">Select…</option>
+              <option value="">Select a voter…</option>
               {(votersData?.rows || []).map((v) => (
                 <option key={v.id} value={v.id}>
                   {v.name} · Part {v.part_no}
@@ -143,7 +157,7 @@ export default function OutreachPage() {
           </Field>
           <div className="flex items-end">
             <button type="submit" disabled={saving} className={`${btnPrimary} w-full`}>
-              {saving ? 'Saving…' : 'Log'}
+              {saving ? 'Saving…' : 'Log visit'}
             </button>
           </div>
         </form>
@@ -152,8 +166,8 @@ export default function OutreachPage() {
       <FilterBar>
         <FilterSearch value={query} onChange={setQuery} placeholder="Filter logs…" />
       </FilterBar>
-      <AlertBanner tone="info">{msg}</AlertBanner>
-      <AlertBanner tone="danger">{error}</AlertBanner>
+      <AlertBanner tone="success">{msg}</AlertBanner>
+      <AlertBanner tone="danger">{formError || error}</AlertBanner>
 
       <DataTable
         columns={columns}
@@ -161,6 +175,9 @@ export default function OutreachPage() {
         rowKey="id"
         loading={loading}
         emptyTitle="No outreach yet"
+        emptyDescription="Pick a voter above and log your first visit or call."
+        emptyActionLabel="Find voters"
+        emptyActionTo="/app/voters"
         pagination={{
           page: pager.page,
           pageCount: pager.pageCount,

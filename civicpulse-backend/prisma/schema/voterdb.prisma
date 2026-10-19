@@ -1,0 +1,113 @@
+// ========== voterdb schema — OCR / electoral-roll extraction ==========
+// Insert all extracted PDF content here (documents, pages, electors).
+
+model ExtractedDocument {
+  id          BigInt   @id @default(autoincrement())
+  filename    String
+  partNo      Int?     @map("part_no")
+  acCode      String   @default("S01-65") @map("ac_code")
+  source      String   @default("tesseract-ocr")
+  mode        String   @default("full_text")
+  dpi         Int?
+  pageWorkers Int?     @map("page_workers")
+  pageCount   Int      @default(0) @map("page_count")
+  textLength  Int      @default(0) @map("text_length")
+  voterCount  Int      @default(0) @map("voter_count")
+  fullText    String?  @map("full_text") @db.Text
+  /// Path to source PDF on disk (uploaded_files/...), if known
+  storagePath String?  @map("storage_path")
+  jobId       String?  @map("job_id")
+  durationMs  Int?     @map("duration_ms")
+  extractedAt DateTime @default(now()) @map("extracted_at") @db.Timestamptz(6)
+  /// Catch-all for any extra OCR JSON keys
+  rawMeta     Json?    @map("raw_meta")
+
+  pages    ExtractedPage[]
+  electors Elector[]
+  rollFile RollFile?
+
+  @@unique([filename], map: "uq_extracted_documents_filename")
+  @@index([partNo], map: "idx_extracted_documents_part")
+  @@map("extracted_documents")
+  @@schema("voterdb")
+}
+
+model ExtractedPage {
+  id         BigInt  @id @default(autoincrement())
+  documentId BigInt  @map("document_id")
+  pageNo     Int     @map("page_no")
+  /// OCR temp image name from JSON, e.g. page-1.png
+  image      String?
+  charCount  Int     @default(0) @map("char_count")
+  text       String  @default("") @db.Text
+
+  document ExtractedDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, pageNo], map: "uq_extracted_pages_doc_page")
+  @@index([documentId], map: "idx_extracted_pages_document")
+  @@map("extracted_pages")
+  @@schema("voterdb")
+}
+
+/// Parsed electors from OCR (structured rows for the app).
+model Elector {
+  id             BigInt        @id @default(autoincrement())
+  documentId     BigInt?       @map("document_id")
+  partNo         Int           @map("part_no")
+  serialNo       Int?          @map("serial_no")
+  epic           String?
+  name           String
+  nameNormalized String?       @map("name_normalized")
+  relationType   RelationType? @default(father) @map("relation_type")
+  relationName   String?       @map("relation_name")
+  houseNo        String?       @map("house_no")
+  age            Int?          @db.SmallInt
+  gender         GenderCode?   @default(U)
+  pageNo         Int?          @map("page_no")
+  boxIndex       Int?          @map("box_index")
+  status         VoterStatus   @default(active)
+  supportLean    SupportLean?  @default(unknown) @map("support_lean")
+  phone          String?
+  rawOcrText     String?       @map("raw_ocr_text")
+  rawJson        Json?         @map("raw_json")
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  document ExtractedDocument? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+  outreach Outreach[]
+
+  @@unique([partNo, serialNo], map: "uq_electors_part_serial")
+  @@index([partNo], map: "idx_electors_part")
+  @@index([partNo, houseNo], map: "idx_electors_part_house")
+  @@index([status], map: "idx_electors_status")
+  @@index([nameNormalized], map: "idx_electors_name_norm")
+  @@index([documentId], map: "idx_electors_document")
+  @@map("electors")
+  @@schema("voterdb")
+}
+
+/// Ingest queue for roll PDFs (extraction pipeline status).
+model RollFile {
+  id           BigInt      @id @default(autoincrement())
+  filename     String
+  partNo       Int?        @map("part_no")
+  acCode       String      @default("S01-65") @map("ac_code")
+  year         Int         @default(2026)
+  revision     Int         @default(1)
+  pageCount    Int         @default(0) @map("page_count")
+  storagePath  String?     @map("storage_path")
+  parseStatus  ParseStatus @default(queued) @map("parse_status")
+  voterCount   Int         @default(0) @map("voter_count")
+  errorMessage String?     @map("error_message")
+  documentId   BigInt?     @unique @map("document_id")
+  uploadedAt   DateTime    @default(now()) @map("uploaded_at") @db.Timestamptz(6)
+  processedAt  DateTime?   @map("processed_at") @db.Timestamptz(6)
+
+  document ExtractedDocument? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+
+  @@unique([filename], map: "uq_roll_files_filename")
+  @@index([partNo], map: "idx_roll_files_part")
+  @@index([parseStatus], map: "idx_roll_files_status")
+  @@map("roll_files")
+  @@schema("voterdb")
+}

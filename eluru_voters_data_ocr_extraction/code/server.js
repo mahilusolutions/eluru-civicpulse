@@ -1,20 +1,35 @@
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+
 const express = require('express');
 const multer = require('multer');
-const path = require('path');
 const fs = require('fs');
 const { createQueue } = require('./queue');
 const { addClient, broadcast, clientCount } = require('./events');
 
 const PORT = Number(process.env.PORT) || 2000;
+const PUBLIC_BASE = String(process.env.OCR_PUBLIC_BASE || '').replace(/\/$/, '');
 const APP_ROOT = path.resolve(__dirname, '..');
 const UPLOADED = path.join(APP_ROOT, 'uploaded_files');
 const EXTRACTED = path.join(APP_ROOT, 'extracted_ocr_data');
+const PUBLIC_DIR = path.join(__dirname, 'public');
 
 [UPLOADED, EXTRACTED].forEach((d) => {
   if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
 });
 
 const queue = createQueue({ uploadedDir: UPLOADED, extractedDir: EXTRACTED });
+
+function sendIndex(res) {
+  const html = fs
+    .readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8')
+    .replace(
+      '<!--OCR_BASE-->',
+      `<script>window.__OCR_BASE__=${JSON.stringify(PUBLIC_BASE)};</script>`
+    );
+  res.type('html').send(html);
+}
 
 /** Keep original PDF name (sanitized path chars only) so files are easy to spot. */
 function safeOriginalName(original) {
@@ -47,12 +62,14 @@ const upload = multer({
 
 const app = express();
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+app.get(['/', '/index.html'], (_req, res) => sendIndex(res));
+app.use(express.static(PUBLIC_DIR));
 
 app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
     port: PORT,
+    public_base: PUBLIC_BASE || null,
     sse_clients: clientCount(),
     queue: queue.stats(),
   });
@@ -208,8 +225,10 @@ app.post('/api/upload', (req, res) => {
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Eluru OCR Extract listening on http://0.0.0.0:${PORT}`);
+  console.log(`Public base: ${PUBLIC_BASE || '(root)'}`);
   console.log(`Uploads:   ${UPLOADED}`);
   console.log(`Extracted: ${EXTRACTED}`);
+  console.log(`DATABASE_URL: ${process.env.DATABASE_URL ? 'set' : 'NOT SET — DB save skipped'}`);
   // Defer so HTTP answers before OCR starts (sync spawn work can stall the event loop).
   setTimeout(() => {
     const recovered = queue.recoverPendingFromDisk();

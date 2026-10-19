@@ -1,0 +1,166 @@
+// ========== public schema — CivicPulse application tables ==========
+
+model Ward {
+  id        BigInt   @id @default(autoincrement())
+  wardNo    Int      @unique @map("ward_no")
+  name      String
+  notes     String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  booths     Booth[]
+  wardBooths WardBooth[]
+  issues     Issue[]
+
+  @@map("wards")
+  @@schema("public")
+}
+
+model Booth {
+  partNo                Int         @id @map("part_no")
+  pollingStationName    String?     @map("polling_station_name")
+  pollingStationAddress String?     @map("polling_station_address")
+  areaName              String?     @map("area_name")
+  acCode                String      @default("S01-65") @map("ac_code")
+  acName                String      @default("Eluru") @map("ac_name")
+  agentName             String?     @map("agent_name")
+  coordinatorName       String?     @map("coordinator_name")
+  coveragePct           Decimal     @default(0) @map("coverage_pct") @db.Decimal(5, 2)
+  status                BoothStatus @default(pending)
+  lat                   Float?
+  lng                   Float?
+  wardId                BigInt?     @map("ward_id")
+  voterCount            Int         @default(0) @map("voter_count")
+  createdAt             DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime    @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  ward             Ward?              @relation(fields: [wardId], references: [id], onDelete: SetNull)
+  wardBooths       WardBooth[]
+  issues           Issue[]
+  surveyResponses  SurveyResponse[]
+  electionDayStats ElectionDayStats?
+
+  @@index([wardId], map: "idx_booths_ward")
+  @@index([status], map: "idx_booths_status")
+  @@map("booths")
+  @@schema("public")
+}
+
+model WardBooth {
+  wardId BigInt @map("ward_id")
+  partNo Int    @map("part_no")
+
+  ward  Ward  @relation(fields: [wardId], references: [id], onDelete: Cascade)
+  booth Booth @relation(fields: [partNo], references: [partNo], onDelete: Cascade)
+
+  @@id([wardId, partNo])
+  @@index([partNo], map: "idx_ward_booths_part")
+  @@map("ward_booths")
+  @@schema("public")
+}
+
+model Outreach {
+  id            BigInt       @id @default(autoincrement())
+  electorId     BigInt       @map("elector_id")
+  type          OutreachType @default(door)
+  outcome       String?
+  notes         String?
+  createdByRole String?      @map("created_by_role")
+  createdAt     DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  // Cross-schema: public.outreach → voterdb.electors
+  elector Elector @relation(fields: [electorId], references: [id], onDelete: Cascade)
+
+  @@index([electorId], map: "idx_outreach_elector")
+  @@index([createdAt(sort: Desc)], map: "idx_outreach_created")
+  @@map("outreach")
+  @@schema("public")
+}
+
+model Issue {
+  id           BigInt        @id @default(autoincrement())
+  title        String
+  description  String?
+  wardId       BigInt?       @map("ward_id")
+  partNo       Int?          @map("part_no")
+  priority     IssuePriority @default(Medium)
+  status       IssueStatus   @default(Open)
+  reporterRole String?       @map("reporter_role")
+  createdAt    DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  ward  Ward?  @relation(fields: [wardId], references: [id], onDelete: SetNull)
+  booth Booth? @relation(fields: [partNo], references: [partNo], onDelete: SetNull)
+
+  @@index([status], map: "idx_issues_status")
+  @@index([partNo], map: "idx_issues_part")
+  @@map("issues")
+  @@schema("public")
+}
+
+model Survey {
+  id        BigInt   @id @default(autoincrement())
+  title     String
+  question  String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  responses SurveyResponse[]
+
+  @@map("surveys")
+  @@schema("public")
+}
+
+model SurveyResponse {
+  id             BigInt   @id @default(autoincrement())
+  surveyId       BigInt   @map("survey_id")
+  partNo         Int?     @map("part_no")
+  answer         String
+  respondentName String?  @map("respondent_name")
+  createdByRole  String?  @map("created_by_role")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  survey Survey @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+  booth  Booth? @relation(fields: [partNo], references: [partNo], onDelete: SetNull)
+
+  @@index([surveyId], map: "idx_survey_responses_survey")
+  @@map("survey_responses")
+  @@schema("public")
+}
+
+model TeamMember {
+  id            BigInt   @id @default(autoincrement())
+  name          String
+  role          String
+  zone          String?
+  assignedParts Int[]    @default([]) @map("assigned_parts")
+  status        String   @default("Active")
+  phone         String?
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("team_members")
+  @@schema("public")
+}
+
+model ElectionDayStats {
+  partNo       Int      @id @map("part_no")
+  slipPrinted  Int      @default(0) @map("slip_printed")
+  votedCount   Int      @default(0) @map("voted_count")
+  missingCount Int      @default(0) @map("missing_count")
+  turnoutPct   Decimal  @default(0) @map("turnout_pct") @db.Decimal(5, 2)
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  booth Booth @relation(fields: [partNo], references: [partNo], onDelete: Cascade)
+
+  @@map("election_day_stats")
+  @@schema("public")
+}
+
+model Setting {
+  key       String   @id
+  value     Json     @default("{}")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("settings")
+  @@schema("public")
+}

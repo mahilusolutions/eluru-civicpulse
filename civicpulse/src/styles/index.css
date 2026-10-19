@@ -5,9 +5,9 @@
 @layer base {
   :root,
   [data-theme='light'] {
-    --bg: #f4f6f9;
+    --bg: #ffffff;
     --bg-elevated: #ffffff;
-    --bg-muted: #e8eef6;
+    --bg-muted: #f3f5f8;
     --ink: #0f1b2d;
     --ink-soft: #243247;
     --muted: #5b6b7c;
@@ -16,6 +16,7 @@
     --brand-strong: #0f1b2d;
     --accent: #f0b429;
     --accent-ink: #7a5a08;
+    --shadow-soft: 0 8px 24px rgba(15, 27, 45, 0.05);
     --hero-veil: linear-gradient(
       110deg,
       rgba(15, 27, 45, 0.92) 0%,
@@ -44,6 +45,7 @@
     --brand-strong: #8eb6ef;
     --accent: #f0b429;
     --accent-ink: #f6d37a;
+    --shadow-soft: 0 10px 28px rgba(0, 0, 0, 0.3);
     --hero-veil: linear-gradient(
       110deg,
       rgba(8, 12, 22, 0.94) 0%,
@@ -71,6 +73,38 @@
     color: var(--ink);
     background: var(--bg);
     -webkit-font-smoothing: antialiased;
+  }
+
+  @keyframes cp-fade-up {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes cp-fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  .cp-page {
+    animation: cp-fade-up 0.35s ease-out both;
+  }
+
+  .cp-empty-enter {
+    animation: cp-fade-in 0.4s ease-out both;
+  }
+
+  .shadow-soft {
+    box-shadow: var(--shadow-soft);
   }
 
   .sr-only {

@@ -4,6 +4,10 @@ export function getRollFiles() {
   return client.get('/data/files').then(unwrap);
 }
 
+export function getOcrStatus() {
+  return client.get('/data/ocr-status').then(unwrap);
+}
+
 export function getRollFile(id) {
   return client.get(`/data/files/${id}`).then(unwrap);
 }

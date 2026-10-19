@@ -38,7 +38,7 @@ export default function TopBar() {
   }
 
   return (
-    <header className="z-20 flex h-12 w-full shrink-0 items-center gap-3 border-b border-[var(--line)] bg-[var(--bg-elevated)] px-4 sm:px-5 lg:px-6">
+    <header className="z-20 flex h-14 w-full shrink-0 items-center gap-3 border-b border-[var(--line)] bg-[var(--bg-elevated)]/90 px-4 backdrop-blur-md sm:px-5 lg:px-6">
       <button
         type="button"
         className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--line)] text-[var(--ink)] lg:hidden"
@@ -116,7 +116,7 @@ export default function TopBar() {
                     <div>
                       <p className="text-sm font-bold">{roleLabel}</p>
                       <p className="text-[11px] text-[var(--muted)]">
-                        Demo session
+                        Signed in for Eluru
                       </p>
                     </div>
                   </div>

@@ -104,7 +104,11 @@ export default function VotersPage() {
 
   return (
     <section className="space-y-4">
-      <PageHeader title="Voters" description="Search electors by name, EPIC, or house." />
+      <PageHeader
+        eyebrow="People"
+        title="Voters"
+        description="Find people by name, voter ID (EPIC), or house number."
+      />
 
       <FilterBar>
         <FilterSearch value={query} onChange={setQuery} placeholder="Search name, EPIC, house…" />
@@ -131,7 +135,9 @@ export default function VotersPage() {
         rowKey="id"
         loading={loading}
         emptyTitle="No voters yet"
-        emptyDescription="Import CSV or run OCR from the Data page."
+        emptyDescription="Upload a roll PDF or import a CSV from the Data page."
+        emptyActionLabel="Go to Data"
+        emptyActionTo="/app/data"
         pagination={{
           page: pager.page,
           pageCount: pager.pageCount,

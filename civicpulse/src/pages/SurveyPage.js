@@ -3,6 +3,8 @@ import { createSurveyResponse, getSurveys } from '../api/survey';
 import { useAuth } from '../auth/AuthContext';
 import AlertBanner from '../components/ui/AlertBanner';
 import DataTable from '../components/ui/DataTable';
+import EmptyState from '../components/ui/EmptyState';
+import LoadingBlock from '../components/ui/LoadingBlock';
 import PageHeader from '../components/ui/PageHeader';
 import Panel, { btnPrimary, Field, inputClass } from '../components/ui/Panel';
 import { useApi } from '../hooks/useApi';
@@ -68,16 +70,25 @@ export default function SurveyPage() {
 
   return (
     <section className="space-y-4">
-      <PageHeader title="Survey" description="Field pulse questions and responses." />
+      <PageHeader
+        eyebrow="Field"
+        title="Survey"
+        description="Collect quick answers from the field and review responses."
+      />
       <AlertBanner tone="danger">{error}</AlertBanner>
 
       {loading ? (
-        <p className="text-sm text-[var(--muted)]">Loading…</p>
+        <LoadingBlock label="Loading survey…" />
       ) : !active ? (
-        <p className="text-sm text-[var(--muted)]">No survey configured.</p>
+        <EmptyState
+          title="No survey yet"
+          description="When a survey is set up, you can collect answers here. Meanwhile keep logging outreach and issues."
+          actionLabel="Log outreach"
+          actionTo="/app/outreach"
+        />
       ) : (
         <>
-          <Panel className="p-4">
+          <Panel className="p-4 sm:p-5">
             <p className="text-sm font-bold text-[var(--ink)]">{active.title}</p>
             <p className="mt-1 text-sm text-[var(--muted)]">{active.question}</p>
             <form onSubmit={onSubmit} className="mt-4 grid gap-3 sm:grid-cols-3">
@@ -118,6 +129,7 @@ export default function SurveyPage() {
             rows={pager.rows}
             rowKey="id"
             emptyTitle="No responses yet"
+            emptyDescription="Submit the first answer using the form above."
             pagination={{
               page: pager.page,
               pageCount: pager.pageCount,

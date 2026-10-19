@@ -47,11 +47,15 @@ export default function SettingsPage() {
 
   return (
     <section className="space-y-4">
-      <PageHeader title="Settings" description="Account and workspace preferences." />
+      <PageHeader
+        eyebrow="Account"
+        title="Settings"
+        description="Your role, theme, and campaign city."
+      />
       <AlertBanner tone="info">{msg}</AlertBanner>
 
       <div className="grid gap-3 lg:grid-cols-2">
-        <Panel className="p-4">
+        <Panel className="p-4 sm:p-5">
           <p className="text-sm font-bold text-[var(--ink)]">Signed in</p>
           <p className="mt-2 text-lg font-bold">{roleLabel}</p>
           <button type="button" onClick={logout} className={`${btnGhost} mt-4`}>
@@ -59,17 +63,17 @@ export default function SettingsPage() {
           </button>
         </Panel>
 
-        <Panel className="p-4">
+        <Panel className="p-4 sm:p-5">
           <p className="text-sm font-bold text-[var(--ink)]">Theme</p>
           <p className="mt-1 text-sm text-[var(--muted)]">
             Current: <span className="font-semibold text-[var(--ink)]">{theme}</span>
           </p>
           <button type="button" onClick={toggleTheme} className={`${btnPrimary} mt-4`}>
-            Toggle light / dark
+            Switch light / dark
           </button>
         </Panel>
 
-        <Panel className="p-4 lg:col-span-2">
+        <Panel className="p-4 sm:p-5 lg:col-span-2">
           <p className="text-sm font-bold text-[var(--ink)]">Campaign city</p>
           <form onSubmit={saveCity} className="mt-3 flex flex-wrap gap-2">
             <Field label="City" className="min-w-[200px] flex-1">

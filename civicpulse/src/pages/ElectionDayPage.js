@@ -111,7 +111,11 @@ export default function ElectionDayPage() {
 
   return (
     <section className="space-y-4">
-      <PageHeader title="Election Day" description="Slips, turnout, and missing voters." />
+      <PageHeader
+        eyebrow="Polling day"
+        title="Election Day"
+        description="Track slips printed, votes cast, and turnout by booth."
+      />
       <FilterBar>
         <FilterSearch value={query} onChange={setQuery} placeholder="Filter part or area…" />
       </FilterBar>
@@ -121,7 +125,10 @@ export default function ElectionDayPage() {
         rows={pager.rows}
         rowKey="part_no"
         loading={loading}
-        emptyTitle="No booth stats yet"
+        emptyTitle="No election-day stats yet"
+        emptyDescription="Stats appear after booths are loaded. Upload rolls from Data first."
+        emptyActionLabel="Go to Data"
+        emptyActionTo="/app/data"
         pagination={{
           page: pager.page,
           pageCount: pager.pageCount,

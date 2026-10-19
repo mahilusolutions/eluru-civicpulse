@@ -11,7 +11,6 @@ function ShellFrame() {
     <div className="h-screen overflow-hidden bg-[var(--bg)] text-[var(--ink)]">
       <Sidebar />
 
-      {/* Offset equals fixed sidebar width so main fills the rest */}
       <div
         className={`flex h-full min-w-0 flex-col transition-[padding] duration-200 ease-out ${
           collapsed ? 'lg:pl-[72px]' : 'lg:pl-[248px]'
@@ -19,7 +18,7 @@ function ShellFrame() {
       >
         <TopBar />
         <main className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain">
-          <div className="mx-auto h-full w-full min-w-0 max-w-[100%] px-4 py-4 sm:px-5 sm:py-5 lg:px-6 lg:py-5">
+          <div className="cp-page mx-auto h-full w-full min-w-0 max-w-[100%] px-4 py-5 sm:px-5 sm:py-6 lg:px-7 lg:py-6">
             <Outlet />
           </div>
         </main>
