@@ -1,218 +1,232 @@
-import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
-import {
-  ArrowRight,
-  Database,
-  Handshake,
-  MapPinned,
-  MessageSquareWarning,
-} from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
+import { ArrowRight, Building2, CheckCircle2, Handshake, MapPin, MessageSquareWarning, RefreshCw, Search, UserX } from 'lucide-react';
 import { getDashboardSummary } from '../api/dashboard';
+import { getVoterStats } from '../api/voters';
 import { useAuth } from '../auth/AuthContext';
 import AlertBanner from '../components/ui/AlertBanner';
 import LoadingBlock from '../components/ui/LoadingBlock';
 import PageHeader from '../components/ui/PageHeader';
-import Panel, { btnGhost, btnPrimary } from '../components/ui/Panel';
-import ProgressBar from '../components/ui/ProgressBar';
-import StatusBadge, { labelForStatus, toneForStatus } from '../components/ui/StatusBadge';
+import { Pill, StatStrip, btnTool, btnToolPrimary } from '../components/ui/kit';
+import { AgePyramid, ChartCard, GenderDonut } from '../components/voters/VoterCharts';
+import { useApi } from '../hooks/useApi';
+import { REACH_STEPS, reachStep, reachedPct, stationName } from '../utils/boothFormat';
+import { fmt, niceName } from '../utils/voterFormat';
 
-const NEXT_STEPS = [
-  {
-    title: 'Upload more roll PDFs',
-    body: 'Only a few parts are loaded. Add PDFs so every booth has voters.',
-    to: '/app/data',
-    icon: Database,
-    label: 'Go to Data',
-  },
-  {
-    title: 'Log outreach visits',
-    body: 'Record door visits and calls so coverage moves above 0%.',
-    to: '/app/outreach',
-    icon: Handshake,
-    label: 'Log outreach',
-  },
-  {
-    title: 'Raise civic issues',
-    body: 'Track ward problems and follow them to resolution.',
-    to: '/app/issues',
-    icon: MessageSquareWarning,
-    label: 'Open issues',
-  },
-];
+const TYPE_LABEL = { door: 'Visit', phone: 'Call', whatsapp: 'WhatsApp', sms: 'SMS', event: 'Event', other: 'Other' };
+const URGENCY_COLOR = { Critical: 'var(--viz-crit)', High: 'var(--viz-serious)', Medium: 'var(--viz-active)', Low: 'var(--viz-unknown)' };
+
+function timeAgo(iso) {
+  const seconds = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} h ago`;
+  return new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+}
+
+function Panel({ title, action, children, className = '' }) {
+  return (
+    <section className={`flex flex-col rounded-2xl border border-[var(--line)] bg-[var(--bg-elevated)] shadow-soft ${className}`}>
+      <div className="flex items-center justify-between gap-2 border-b border-[var(--line)] px-4 py-2.5">
+        <h2 className="text-sm font-bold text-[var(--ink)]">{title}</h2>
+        {action}
+      </div>
+      <div className="min-w-0 flex-1">{children}</div>
+    </section>
+  );
+}
+
+const seeAll = (to, label = 'See all') => (
+  <Link to={to} className="inline-flex items-center gap-1 whitespace-nowrap text-xs font-semibold text-[var(--brand)] hover:underline">
+    {label}
+    <ArrowRight className="h-3 w-3" />
+  </Link>
+);
 
 export default function DashboardPage() {
   const { roleLabel } = useAuth();
-  const [data, setData] = useState(null);
-  const [error, setError] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
+  const summary = useApi(getDashboardSummary, []);
+  const voters = useApi(() => getVoterStats({}), []);
 
-  useEffect(() => {
-    let cancelled = false;
-    getDashboardSummary()
-      .then((result) => {
-        if (!cancelled) setData(result);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err.message);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const t = summary.data?.totals;
+  const booths = summary.data?.booths || [];
+  const stats = voters.data;
 
-  if (loading) return <LoadingBlock label="Loading dashboard…" />;
+  const refresh = () => {
+    summary.reload({ silent: true });
+    voters.reload({ silent: true });
+  };
 
-  const stats = data?.stats || [];
-  const topBooths = data?.topBooths || data?.top_booths || [];
-  const recentIssues = data?.recentIssues || data?.recent_issues || [];
-  const showNext = recentIssues.length === 0 || topBooths.every((b) => !(b.coverage_pct > 0));
+  // Things that need someone's attention, each one linking to the place that fixes it.
+  const attention = t
+    ? [
+        t.booths_without_agent > 0 && { icon: Building2, text: `${fmt(t.booths_without_agent)} ${t.booths_without_agent === 1 ? 'booth has' : 'booths have'} no booth agent`, to: '/app/booths?assign=unassigned', action: 'Assign' },
+        t.issues_open > 0 && { icon: MessageSquareWarning, text: `${fmt(t.issues_open)} open ${t.issues_open === 1 ? 'issue' : 'issues'}${t.issues_urgent ? `, ${fmt(t.issues_urgent)} urgent` : ''}`, to: '/app/issues?status=open', action: 'Review' },
+        t.voters - t.reached > 0 && { icon: Handshake, text: `${fmt(t.voters - t.reached)} voters have not been reached yet`, to: '/app/outreach', action: 'Log contacts' },
+        stats?.needs_check > 0 && { icon: UserX, text: `${fmt(stats.needs_check)} voters have a detail that could not be read`, to: '/app/voters?missing=any', action: 'Check' },
+        booths.length > 0 && { icon: MapPin, text: 'Booth locations are needed to show the map', to: '/app/map', action: 'Open map', hide: booths.every((b) => b.lat != null) },
+      ].filter((x) => x && !x.hide)
+    : [];
 
   return (
-    <section className="space-y-6">
+    <section className="w-full space-y-3">
       <PageHeader
-        description={`Hello, ${roleLabel} — booths, voters, and what needs attention today.`}
+        description={`Hello, ${roleLabel || 'there'}. Here is where the campaign stands today.`}
         actions={
-          <div className="flex flex-wrap gap-2">
-            <Link to="/app/voters" className={btnGhost}>
-              Voters
+          <>
+            <button type="button" onClick={refresh} className={btnTool} aria-label="Refresh">
+              <RefreshCw className="h-3.5 w-3.5" />
+            </button>
+            <Link to="/app/voters" className={btnTool}>
+              <Search className="h-3.5 w-3.5" />
+              Find a voter
             </Link>
-            <Link to="/app/data" className={btnPrimary}>
-              Upload data
+            <Link to="/app/data" className={btnToolPrimary}>
+              Upload voter list
             </Link>
-          </div>
+          </>
         }
       />
 
-      <AlertBanner tone="danger">{error}</AlertBanner>
+      <AlertBanner tone="danger">{summary.error || voters.error}</AlertBanner>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        {stats.map((stat, i) => (
-          <Panel
-            key={stat.label}
-            className="relative overflow-hidden p-4 transition hover:-translate-y-0.5"
-          >
-            <div
-              className="pointer-events-none absolute -right-6 -top-6 h-20 w-20 rounded-full opacity-20"
-              style={{
-                background:
-                  i % 2 === 0
-                    ? 'radial-gradient(circle, var(--brand), transparent 70%)'
-                    : 'radial-gradient(circle, var(--accent), transparent 70%)',
-              }}
-            />
-            <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-[var(--muted)]">
-              {stat.label}
-            </p>
-            <p className="mt-2 text-3xl font-extrabold tracking-tight text-[var(--ink)]">
-              {stat.value}
-            </p>
-            <p className="mt-1 text-xs text-[var(--muted)]">{stat.hint}</p>
-          </Panel>
-        ))}
-      </div>
+      {summary.loading && !summary.data ? (
+        <LoadingBlock label="Loading…" />
+      ) : t ? (
+        <>
+          <StatStrip
+            items={[
+              { label: 'Booths', value: fmt(t.booths), hint: `${fmt(t.booths_complete)} complete` },
+              { label: 'Voters', value: fmt(t.voters), hint: `${fmt(t.households)} households` },
+              {
+                label: 'Voters reached',
+                value: `${t.reach_pct}%`,
+                children: (
+                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-[var(--viz-track)]" role="img" aria-label={`${t.reach_pct}% reached`}>
+                    <div className="h-full rounded-full bg-[var(--brand)]" style={{ width: `${t.reach_pct}%` }} />
+                  </div>
+                ),
+              },
+              { label: 'Contacts today', value: fmt(t.outreach_today), hint: `${fmt(t.outreach_week)} this week` },
+              { label: 'Open issues', value: fmt(t.issues_open), hint: t.issues_urgent ? `${fmt(t.issues_urgent)} urgent` : 'none urgent' },
+            ]}
+          />
 
-      {showNext ? (
-        <div className="grid gap-3 md:grid-cols-3">
-          {NEXT_STEPS.map((step) => {
-            const Icon = step.icon;
-            return (
-              <Panel key={step.title} className="flex flex-col p-4">
-                <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--bg-muted)] text-[var(--brand)]">
-                  <Icon className="h-5 w-5" strokeWidth={2} />
-                </div>
-                <h3 className="text-sm font-bold text-[var(--ink)]">{step.title}</h3>
-                <p className="mt-1 flex-1 text-sm leading-relaxed text-[var(--muted)]">{step.body}</p>
-                <Link
-                  to={step.to}
-                  className="mt-3 inline-flex items-center gap-1 text-sm font-semibold text-[var(--brand)]"
-                >
-                  {step.label}
-                  <ArrowRight className="h-3.5 w-3.5" />
-                </Link>
-              </Panel>
-            );
-          })}
-        </div>
-      ) : null}
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            <ChartCard center title="Men and women" subtitle="Click a group to see those voters">
+              <GenderDonut genders={stats?.genders || []} active={null} onPick={(v) => v !== 'all' && navigate(`/app/voters?gender=${v}`)} />
+            </ChartCard>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Panel>
-          <div className="flex items-center justify-between border-b border-[var(--line)] px-4 py-3.5">
-            <div className="flex items-center gap-2">
-              <MapPinned className="h-4 w-4 text-[var(--brand)]" />
-              <h3 className="text-sm font-bold text-[var(--ink)]">Top booths</h3>
-            </div>
-            <Link to="/app/booths" className="text-xs font-semibold text-[var(--brand)]">
-              View all
-            </Link>
+            <ChartCard center title="Age groups" subtitle="Click an age group to see those voters">
+              <AgePyramid bands={stats?.age_bands || []} active={null} onPick={(v) => v !== 'all' && navigate(`/app/voters?age=${encodeURIComponent(v)}`)} />
+            </ChartCard>
+
+            <ChartCard className="md:col-span-2 xl:col-span-1" title="Booths at a glance" subtitle="Each square is a booth. Darker means more voters reached." action={seeAll('/app/booths', 'Open booths')}>
+              {booths.length ? (
+                <>
+                  <div className="grid grid-cols-[repeat(auto-fill,minmax(1.6rem,1fr))] gap-1">
+                    {booths.map((b) => (
+                      <Link
+                        key={b.part_no}
+                        to="/app/booths"
+                        title={`Booth ${b.part_no} · ${stationName(b.polling_station_name, b.part_no)} · ${reachedPct(b)}% reached`}
+                        className="flex aspect-square items-center justify-center rounded-md text-[9px] font-bold ring-1 ring-inset ring-[var(--line)] transition hover:scale-110 hover:ring-2 hover:ring-[var(--brand)]"
+                        style={{ background: reachStep(reachedPct(b)).color, color: reachedPct(b) >= 25 ? '#fff' : 'var(--ink-soft)' }}
+                      >
+                        {b.part_no}
+                      </Link>
+                    ))}
+                  </div>
+                  <ul className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[var(--muted)]">
+                    {REACH_STEPS.map((s) => (
+                      <li key={s.label} className="inline-flex items-center gap-1.5">
+                        <span className="h-2.5 w-2.5 rounded-[3px] ring-1 ring-inset ring-[var(--line)]" style={{ background: s.color }} />
+                        {s.label}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : (
+                <p className="py-6 text-center text-sm text-[var(--muted)]">Booths appear once a voter list is uploaded.</p>
+              )}
+            </ChartCard>
           </div>
-          <ul className="divide-y divide-[var(--line)] px-4">
-            {topBooths.length === 0 ? (
-              <li className="py-8 text-center text-sm text-[var(--muted)]">
-                No booths yet. Upload a roll PDF from Data.
-              </li>
-            ) : (
-              topBooths.slice(0, 6).map((row) => (
-                <li key={row.part_no} className="py-3.5">
-                  <div className="mb-2 flex items-center justify-between gap-2 text-sm">
-                    <p className="min-w-0 truncate font-semibold text-[var(--ink)]">
-                      Part {row.part_no}
-                      <span className="font-normal text-[var(--muted)]">
-                        {' '}
-                        · {row.area_name || 'Eluru'}
+
+          <div className="grid gap-3 xl:grid-cols-3">
+            <Panel title="What needs attention">
+              {attention.length ? (
+                <ul className="divide-y divide-[var(--line)]">
+                  {attention.map(({ icon: ItemIcon, text, to, action }) => (
+                    <li key={to}>
+                      <Link to={to} className="flex items-center gap-3 px-4 py-2.5 text-sm transition hover:bg-[var(--bg-muted)]">
+                        <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--bg-muted)] text-[var(--brand)]">
+                          <ItemIcon className="h-4 w-4" />
+                        </span>
+                        <span className="min-w-0 flex-1 text-[var(--ink)]">{text}</span>
+                        <span className="inline-flex items-center gap-1 whitespace-nowrap text-xs font-semibold text-[var(--brand)]">
+                          {action}
+                          <ArrowRight className="h-3 w-3" />
+                        </span>
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="flex items-center gap-2 px-4 py-6 text-sm text-[var(--ink-soft)]">
+                  <CheckCircle2 className="h-4 w-4 text-[var(--ok)]" />
+                  Nothing needs attention right now.
+                </p>
+              )}
+            </Panel>
+
+            <Panel title="Recent contacts" action={seeAll('/app/outreach')}>
+              {summary.data.recent_outreach.length ? (
+                <ul className="divide-y divide-[var(--line)]">
+                  {summary.data.recent_outreach.map((o) => (
+                    <li key={o.id} className="flex items-center gap-3 px-4 py-2.5 text-sm">
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-semibold text-[var(--ink)]">{niceName(o.voter_name)}</span>
+                        <span className="block truncate text-xs text-[var(--muted)]">
+                          {TYPE_LABEL[o.type] || o.type}
+                          {o.outcome ? ` · ${o.outcome}` : ''} · Booth {o.part_no}
+                        </span>
                       </span>
-                    </p>
-                    <span className="shrink-0 text-xs font-medium text-[var(--muted)]">
-                      {row.voter_count || 0} voters
-                    </span>
-                  </div>
-                  <ProgressBar value={row.coverage_pct || 0} />
-                </li>
-              ))
-            )}
-          </ul>
-        </Panel>
+                      <span className="whitespace-nowrap text-xs text-[var(--muted)]">{timeAgo(o.created_at)}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="px-4 py-6 text-sm text-[var(--muted)]">
+                  No contacts yet. <Link to="/app/outreach" className="font-semibold text-[var(--brand)] hover:underline">Log the first one</Link>.
+                </p>
+              )}
+            </Panel>
 
-        <Panel>
-          <div className="flex items-center justify-between border-b border-[var(--line)] px-4 py-3.5">
-            <div className="flex items-center gap-2">
-              <MessageSquareWarning className="h-4 w-4 text-[var(--brand)]" />
-              <h3 className="text-sm font-bold text-[var(--ink)]">Recent issues</h3>
-            </div>
-            <Link to="/app/issues" className="text-xs font-semibold text-[var(--brand)]">
-              View all
-            </Link>
+            <Panel title="Recent issues" action={seeAll('/app/issues')}>
+              {summary.data.recent_issues.length ? (
+                <ul className="divide-y divide-[var(--line)]">
+                  {summary.data.recent_issues.map((i) => (
+                    <li key={i.id} className="flex items-center gap-3 px-4 py-2.5 text-sm">
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-semibold text-[var(--ink)]">{i.title}</span>
+                        <span className="block truncate text-xs text-[var(--muted)]">
+                          {i.partNo ? `Booth ${i.partNo} · ` : ''}
+                          {i.status === 'In_progress' ? 'In progress' : i.status}
+                        </span>
+                      </span>
+                      <Pill color={URGENCY_COLOR[i.priority]}>{i.priority}</Pill>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="px-4 py-6 text-sm text-[var(--muted)]">
+                  No issues reported. <Link to="/app/issues" className="font-semibold text-[var(--brand)] hover:underline">Report one</Link>.
+                </p>
+              )}
+            </Panel>
           </div>
-          <ul className="divide-y divide-[var(--line)] px-4">
-            {recentIssues.length === 0 ? (
-              <li className="py-8 text-center text-sm text-[var(--muted)]">
-                No issues logged yet.{' '}
-                <Link to="/app/issues" className="font-semibold text-[var(--brand)]">
-                  Add one
-                </Link>
-              </li>
-            ) : (
-              recentIssues.slice(0, 6).map((issue) => (
-                <li key={issue.id} className="flex items-start justify-between gap-3 py-3.5">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold text-[var(--ink)]">{issue.title}</p>
-                    <p className="mt-0.5 text-xs text-[var(--muted)]">
-                      #{issue.id}
-                      {issue.part_no ? ` · Part ${issue.part_no}` : ''}
-                    </p>
-                  </div>
-                  <StatusBadge tone={toneForStatus(issue.status)}>
-                    {labelForStatus(issue.status)}
-                  </StatusBadge>
-                </li>
-              ))
-            )}
-          </ul>
-        </Panel>
-      </div>
+        </>
+      ) : null}
     </section>
   );
 }

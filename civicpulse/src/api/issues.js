@@ -11,3 +11,7 @@ export function createIssue(payload) {
 export function updateIssue(id, payload) {
   return client.patch(`/issues/${id}`, payload).then(unwrap);
 }
+
+export function deleteIssue(id) {
+  return client.delete(`/issues/${id}`).then(unwrap);
+}

@@ -18,7 +18,7 @@ function ShellFrame() {
       >
         <TopBar />
         <main className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain">
-          <div className="cp-page mx-auto h-full w-full min-w-0 max-w-[100%] px-4 py-5 sm:px-5 sm:py-6 lg:px-7 lg:py-6">
+          <div className="cp-page mx-auto h-full w-full min-w-0 max-w-[100%] px-3 py-3 sm:px-4 lg:px-4 lg:py-4">
             <Outlet />
           </div>
         </main>

@@ -2,6 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
+const { parsePageMeta, parseRollCover } = require('./parseRollMeta');
+const { readCardHeaders } = require('./cardReader');
 
 const TESSERACT =
   process.env.TESSERACT_PATH ||
@@ -106,7 +108,7 @@ function applyEpicsToTail(voters, epics) {
   }
 }
 
-function extractVotersFromChunk(chunk, partNo, serialStart) {
+function extractVotersFromChunk(chunk, partNo, serialStart, pageMeta = {}) {
   const normalized = chunk
     .replace(/\r/g, '\n')
     .replace(/[|]/g, 'I')
@@ -174,6 +176,10 @@ function extractVotersFromChunk(chunk, partNo, serialStart) {
       house_no,
       age: ag.age || null,
       gender: ag.gender || null,
+      page_no: pageMeta.page_no || null,
+      section_no: pageMeta.section_no || null,
+      section_name: pageMeta.section_name || null,
+      ac_name: pageMeta.ac_name || null,
       status: 'active',
       raw_ocr_text: `${name} | ${rel.name || ''} | ${house_no || ''} | ${ag.age || ''}`,
     });
@@ -185,14 +191,28 @@ function extractVotersFromChunk(chunk, partNo, serialStart) {
 function parseEciOcrText(text, partNo) {
   if (!text || !text.trim()) return [];
 
-  // Process page-by-page: EPIC lines sit under each 3-card row (often before the next Name line)
-  const pages = String(text).split(/===== PAGE \d+ =====/i);
+  // Keep page markers so we know page_no for section/road + images
+  const parts = String(text).split(/(===== PAGE \d+ =====)/i);
   const voters = [];
   let pendingEpics = [];
+  let currentPageNo = null;
 
-  for (const page of pages) {
-    if (!page || !/Name\s*:/i.test(page)) {
-      // Epics-only fragment / header page
+  for (let i = 0; i < parts.length; i += 1) {
+    const part = parts[i];
+    if (!part) continue;
+    const marker = part.match(/^===== PAGE (\d+) =====$/i);
+    if (marker) {
+      currentPageNo = Number(marker[1]);
+      continue;
+    }
+
+    const page = part;
+    const pageMeta = {
+      ...parsePageMeta(page),
+      page_no: currentPageNo,
+    };
+
+    if (!/Name\s*:/i.test(page)) {
       pendingEpics = pendingEpics.concat(extractEpicsFromChunk(page));
       continue;
     }
@@ -203,24 +223,164 @@ function parseEciOcrText(text, partNo) {
     const earlyEpics = extractEpicsFromChunk(early);
     const bodyEpics = extractEpicsFromChunk(body);
 
-    // Epics before first Name on this page belong to previous page's last cards
     applyEpicsToTail(voters, pendingEpics.concat(earlyEpics));
     pendingEpics = [];
 
-    const pageVoters = extractVotersFromChunk(body, partNo, voters.length + 1);
-    // Epics after Names on this page belong to this page's cards (OCR often misses early rows)
+    const pageVoters = extractVotersFromChunk(body, partNo, voters.length + 1, pageMeta);
     applyEpicsToTail(pageVoters, bodyEpics);
     voters.push(...pageVoters);
   }
 
   applyEpicsToTail(voters, pendingEpics);
 
-  // Refresh raw_ocr_text to include EPIC when present
   for (const v of voters) {
-    v.raw_ocr_text = `${v.epic || ''} | ${v.name} | ${v.relation_name || ''} | ${v.house_no || ''} | ${v.age || ''}`.replace(
-      /^\s*\|\s*/,
-      ''
-    );
+    const road = v.section_name
+      ? `${v.section_no != null ? `${v.section_no}-` : ''}${v.section_name}`
+      : '';
+    v.raw_ocr_text =
+      `${v.epic || ''} | ${v.name} | ${v.relation_name || ''} | ${v.house_no || ''} | ${v.age || ''} | ${road}`
+        .replace(/^\s*\|\s*/, '')
+        .replace(/\s*\|\s*$/, '');
+  }
+  return voters;
+}
+
+/**
+ * The age digits OCR gets wrong: a "7" often comes out with a stray slash ("67" -> "6/7",
+ * "75" -> "/5" or "7/5"). Returns null when the text cannot be trusted rather than guessing.
+ */
+function parseAgeDigits(raw) {
+  let s = String(raw || '').trim();
+  if (!s || /[^0-9\/IlO|]/.test(s)) return null;
+  // A slash touching a 7 is part of that glyph (7/5 = 75, 6/7 = 67); a lone slash is the 7 itself (/5 = 75, 3/ = 37).
+  s = s.replace(/\/(?=7)|(?<=7)\//g, '').replace(/\//g, '7').replace(/[Il|]/g, '1').replace(/O/g, '0');
+  const age = Number(s);
+  return Number.isInteger(age) && age >= 18 && age <= 120 ? age : null;
+}
+
+/** Parse the text block of one voter card (read on its own, so nothing is interleaved). */
+function parseCardBody(body, partNo, serial, meta = {}) {
+  const flat = String(body || '')
+    .replace(/\r/g, '')
+    .replace(/ /g, ' ')
+    .replace(/[|]/g, 'I')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .join(' ');
+  if (!flat) return null;
+
+  const REL = '(?:Fathers?|Husbands?|Mothers?|Others?)';
+  const STOP = `(?=\\s*(?:${REL}\\s*(?:Name)?\\s*[:;=]|House\\s*Numb|Age\\s*[:;=]|$))`;
+
+  let nameRaw = null;
+  const nameMatch = flat.match(new RegExp(`^\\W*Name\\s*[^A-Za-z0-9\\s]{0,3}\\s*(.+?)${STOP}`, 'i'));
+  if (nameMatch) nameRaw = nameMatch[1];
+  else {
+    // The "Name" label itself was misread: take everything before the first other label.
+    const lead = flat.match(new RegExp(`^(.+?)${STOP}`, 'i'));
+    nameRaw = lead ? lead[1].replace(/^\W*\w{0,6}\W+/, '') : null;
+  }
+  const name = cleanName(nameRaw);
+  if (!name) return null;
+
+  let relation_type = 'father';
+  let relation_name = null;
+  const relMatch = flat.match(
+    new RegExp(`(${REL})\\s*(?:Name)?\\s*[:;=]?\\s*(.+?)(?=\\s*House\\s*Numb|\\s*Age\\s*[:;=]|$)`, 'i')
+  );
+  if (relMatch) {
+    const kind = relMatch[1].toLowerCase();
+    relation_type = kind.startsWith('h') ? 'husband' : kind.startsWith('m') ? 'mother' : kind.startsWith('o') ? 'other' : 'father';
+    relation_name = cleanName(relMatch[2]);
+  }
+
+  let house_no = null;
+  const houseMatch = flat.match(/House\s*Numb\w*\s*[:;=]?\s*(.+?)(?=\s*Age\s*[:;=]|\s*Photo|\s*Available|$)/i);
+  if (houseMatch) {
+    const h = houseMatch[1].replace(/^[:;=\s]+/, '').replace(/\s+/g, ' ').trim();
+    house_no = h && !/^name$/i.test(h) ? h.slice(0, 60) : null;
+  }
+
+  let age = null;
+  let gender = null;
+  const ageGender = flat.match(/Age\s*[:;=]?\s*([0-9\/>IlO|]{1,4})\s*Gender\s*[:;=]?\s*(Male|Female|Third|M\b|F\b)/i);
+  if (ageGender) {
+    age = parseAgeDigits(ageGender[1]);
+    gender = /^f/i.test(ageGender[2]) ? 'F' : /^t/i.test(ageGender[2]) ? 'O' : 'M';
+  } else {
+    const a = flat.match(/Age\s*[:;=]?\s*([0-9\/>IlO|]{1,4})/i);
+    if (a) age = parseAgeDigits(a[1]);
+    const g = flat.match(/Gender\s*[:;=]?\s*(Male|Female|Third)/i);
+    if (g) gender = /^f/i.test(g[1]) ? 'F' : /^t/i.test(g[1]) ? 'O' : 'M';
+  }
+
+  return {
+    part_no: partNo,
+    serial_no: serial,
+    epic: null,
+    name,
+    relation_type,
+    relation_name,
+    house_no,
+    age,
+    gender,
+    page_no: meta.page_no || null,
+    section_no: meta.section_no || null,
+    section_name: meta.section_name || null,
+    ac_name: meta.ac_name || null,
+    status: 'active',
+    raw_ocr_text: null,
+  };
+}
+
+function formatRawOcr(v) {
+  const road = v.section_name
+    ? `${v.section_no != null ? `${v.section_no}-` : ''}${v.section_name}`
+    : '';
+  return `${v.epic || ''} | ${v.name} | ${v.relation_name || ''} | ${v.house_no || ''} | ${v.age || ''} | ${road}`
+    .replace(/^\s*\|\s*/, '')
+    .replace(/\s*\|\s*$/, '');
+}
+
+/**
+ * Voters for one page. When the card reader ran, every card is parsed on its own
+ * (serial, Voter ID and details always belong together). Otherwise fall back to
+ * parsing the full-page text.
+ */
+function parsePageVoters(pageNo, pageText, cards, partNo, startSerial = 1) {
+  if (Array.isArray(cards) && cards.length) {
+    const meta = { ...parsePageMeta(pageText), page_no: pageNo };
+    const voters = [];
+    cards.forEach((card, i) => {
+      const parsed = parseCardBody(card.body_text, partNo, startSerial + i, meta);
+      if (!parsed) return;
+      parsed.serial_no = startSerial + i;
+      parsed.epic = card.epic || null;
+      parsed.raw_ocr_text = formatRawOcr(parsed);
+      voters.push(parsed);
+    });
+    return voters;
+  }
+  const voters = parseEciOcrText(`===== PAGE ${pageNo} =====\n${pageText}`, partNo);
+  voters.forEach((v, i) => {
+    v.serial_no = startSerial + i;
+  });
+  return voters;
+}
+
+/**
+ * All voters for the roll, numbered in printed order. A card that cannot be read still
+ * uses up its number, so later voters keep the serial printed on the roll.
+ */
+function buildVoters(pages, partNo) {
+  const sorted = [...pages].sort((a, b) => a.page - b.page);
+  const voters = [];
+  let serial = 1;
+  for (const page of sorted) {
+    const pageVoters = parsePageVoters(page.page, page.text || '', page.cards, partNo, serial);
+    voters.push(...pageVoters);
+    serial += Array.isArray(page.cards) && page.cards.length ? page.cards.length : pageVoters.length;
   }
   return voters;
 }
@@ -297,6 +457,41 @@ async function pdfPageCount(pdfPath) {
  * OCR every page. Renders+OCRs page-by-page so live text streams immediately
  * (does not wait for the whole PDF to convert first).
  */
+function keepPageImage(srcPath, imageDir, pageNo) {
+  if (!imageDir || !srcPath || !fs.existsSync(srcPath)) return null;
+  try {
+    fs.mkdirSync(imageDir, { recursive: true });
+    const name = `page-${pageNo}.png`;
+    const dest = path.join(imageDir, name);
+    fs.copyFileSync(srcPath, dest);
+    return name;
+  } catch (err) {
+    console.warn('keepPageImage:', err.message);
+    return null;
+  }
+}
+
+function buildOcrResult(pageTexts, partNo, { pageWorkers, dpi, pageStartedAt }) {
+  pageTexts.sort((a, b) => a.page - b.page);
+  const fullText = pageTexts
+    .map((p) => `===== PAGE ${p.page} =====\n${p.text || ''}`.trimEnd())
+    .join('\n\n');
+  const voters = buildVoters(pageTexts, partNo);
+  const roll_info = parseRollCover(pageTexts);
+  return {
+    pages: pageTexts,
+    full_text: fullText,
+    voters,
+    roll_info,
+    pageCount: pageTexts.length,
+    ocrPages: pageTexts.length,
+    textLength: fullText.length,
+    pageWorkers,
+    dpi,
+    durationMs: Date.now() - pageStartedAt,
+  };
+}
+
 async function ocrPdfToVoters(pdfPath, partNo, opts = {}) {
   const {
     onProgress,
@@ -304,7 +499,10 @@ async function ocrPdfToVoters(pdfPath, partNo, opts = {}) {
     dpi = 160,
     startPage = 1,
     pageWorkers = 3,
+    imageDir = null,
   } = opts;
+
+  const keepImages = process.env.OCR_KEEP_IMAGES !== '0' && Boolean(imageDir);
 
   if (!fs.existsSync(pdfPath)) throw new Error(`PDF not found: ${pdfPath}`);
 
@@ -339,6 +537,7 @@ async function ocrPdfToVoters(pdfPath, partNo, opts = {}) {
           : '';
         const numMatch = pageFile.match(/(\d+)\.png$/i);
         const pageNo = numMatch ? Number(numMatch[1]) : startPage + i;
+        const savedImage = keepImages ? keepPageImage(imgPath, imageDir, pageNo) : null;
         finished += 1;
         const elapsed = (Date.now() - ocrStart) / 1000;
         const etaSeconds = Math.round((elapsed / finished) * (pageFiles.length - finished));
@@ -355,23 +554,14 @@ async function ocrPdfToVoters(pdfPath, partNo, opts = {}) {
             pageCharCount: pageText.length,
           });
         }
-        return { page: pageNo, image: pageFile, char_count: pageText.length, text: pageText };
+        return {
+          page: pageNo,
+          image: savedImage || `page-${pageNo}.png`,
+          char_count: pageText.length,
+          text: pageText,
+        };
       });
-      pageTexts.sort((a, b) => a.page - b.page);
-      const fullText = pageTexts
-        .map((p) => `===== PAGE ${p.page} =====\n${p.text || ''}`.trimEnd())
-        .join('\n\n');
-      return {
-        pages: pageTexts,
-        full_text: fullText,
-        voters: parseEciOcrText(fullText, partNo),
-        pageCount: pageTexts.length,
-        ocrPages: pageTexts.length,
-        textLength: fullText.length,
-        pageWorkers,
-        dpi,
-        durationMs: Date.now() - pageStartedAt,
-      };
+      return buildOcrResult(pageTexts, partNo, { pageWorkers, dpi, pageStartedAt });
     }
 
     const lastPage =
@@ -400,27 +590,21 @@ async function ocrPdfToVoters(pdfPath, partNo, opts = {}) {
         pdfPath,
         prefix,
       ]);
-      const imgPath = `${prefix}.png`;
+      let imgPath = `${prefix}.png`;
       if (!fs.existsSync(imgPath)) {
-        // some builds omit -singlefile behavior; pick any png for this prefix
         const alt = fs
           .readdirSync(tmpRoot)
           .find((f) => f.startsWith(`p${pageNo}`) && f.endsWith('.png'));
         if (!alt) throw new Error(`No image for page ${pageNo}`);
-        await runAsync(TESSERACT, [
-          path.join(tmpRoot, alt),
-          prefix,
-          '-l',
-          'eng',
-          '--psm',
-          '6',
-        ]);
+        imgPath = path.join(tmpRoot, alt);
+        await runAsync(TESSERACT, [imgPath, prefix, '-l', 'eng', '--psm', '6']);
       } else {
         await runAsync(TESSERACT, [imgPath, prefix, '-l', 'eng', '--psm', '6']);
       }
       const pageText = fs.existsSync(`${prefix}.txt`)
         ? fs.readFileSync(`${prefix}.txt`, 'utf8')
         : '';
+      const savedImage = keepImages ? keepPageImage(imgPath, imageDir, pageNo) : null;
       try {
         if (fs.existsSync(imgPath)) fs.unlinkSync(imgPath);
       } catch {
@@ -429,7 +613,23 @@ async function ocrPdfToVoters(pdfPath, partNo, opts = {}) {
       finished += 1;
       const elapsed = (Date.now() - ocrStart) / 1000;
       const etaSeconds = Math.round((elapsed / finished) * (pageNos.length - finished));
-      const voters = parseEciOcrText(pageText, partNo);
+      // Voter pages: read every card on its own (serial + Voter ID + details together).
+      let cards = null;
+      if (process.env.OCR_CARD_READER !== '0' && /Section\s*No\s*and\s*Name/i.test(pageText)) {
+        try {
+          cards = await readCardHeaders({
+            pdfPath,
+            pageNo,
+            pdftoppm: PDFTOPPM,
+            tesseract: TESSERACT,
+            tmpDir: tmpRoot,
+            bodies: true,
+          });
+        } catch (err) {
+          console.warn(`Card reader failed on page ${pageNo}: ${err.message} (using page text)`);
+        }
+      }
+      const voters = parsePageVoters(pageNo, pageText, cards, partNo);
       if (onProgress) {
         onProgress({
           stage: 'ocr',
@@ -445,28 +645,14 @@ async function ocrPdfToVoters(pdfPath, partNo, opts = {}) {
       }
       return {
         page: pageNo,
-        image: `page-${pageNo}.png`,
+        image: savedImage || `page-${pageNo}.png`,
         char_count: pageText.length,
         text: pageText,
+        cards,
       };
     });
 
-    pageTexts.sort((a, b) => a.page - b.page);
-    const fullText = pageTexts
-      .map((p) => `===== PAGE ${p.page} =====\n${p.text || ''}`.trimEnd())
-      .join('\n\n');
-    const voters = parseEciOcrText(fullText, partNo);
-    return {
-      pages: pageTexts,
-      full_text: fullText,
-      voters,
-      pageCount: pageTexts.length,
-      ocrPages: pageTexts.length,
-      textLength: fullText.length,
-      pageWorkers,
-      dpi,
-      durationMs: Date.now() - pageStartedAt,
-    };
+    return buildOcrResult(pageTexts, partNo, { pageWorkers, dpi, pageStartedAt });
   } finally {
     try {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
@@ -480,8 +666,10 @@ module.exports = {
   isJunkElectorName,
   normalizeEpic,
   parseEciOcrText,
+  parsePageVoters,
+  buildVoters,
+  parseRollCover,
   ocrPdfToVoters,
-  parseEciOcrText,
   partFromFilename,
   TESSERACT,
   PDFTOPPM,

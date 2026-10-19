@@ -19,11 +19,19 @@ export default function TopBar() {
   const location = useLocation();
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [query, setQuery] = useState('');
 
   const pageTitle = useMemo(() => {
     const match = NAV_ITEMS.find((item) => item.path === location.pathname);
     return match?.label || 'Workspace';
   }, [location.pathname]);
+
+  function handleSearch(event) {
+    event.preventDefault();
+    const q = query.trim();
+    navigate(q ? `/app/voters?q=${encodeURIComponent(q)}` : '/app/voters');
+    setQuery('');
+  }
 
   function handleLogout() {
     setMenuOpen(false);
@@ -58,14 +66,17 @@ export default function TopBar() {
       </div>
 
       <div className="mx-auto hidden max-w-md flex-1 md:block">
-        <label className="relative block">
+        <form onSubmit={handleSearch} role="search" className="relative block">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--muted)]" />
           <input
             type="search"
-            placeholder="Search voters, booths, wards…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            aria-label="Search voters"
+            placeholder="Search voters by name, ID or house…"
             className="w-full rounded-xl border border-[var(--line)] bg-[var(--bg)] py-2 pl-9 pr-3 text-sm text-[var(--ink)] outline-none placeholder:text-[var(--muted)] focus:border-[var(--brand)]"
           />
-        </label>
+        </form>
       </div>
 
       <div className="ml-auto flex items-center gap-2">
@@ -78,7 +89,6 @@ export default function TopBar() {
           title="Notifications"
         >
           <Bell className="h-4 w-4" />
-          <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-[var(--brand)]" />
         </button>
 
         <div className="relative">

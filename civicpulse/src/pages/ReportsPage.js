@@ -1,94 +1,90 @@
 import { useState } from 'react';
-import { Download } from 'lucide-react';
-import { downloadReportCsv, getReport } from '../api/reports';
+import { Building2, ClipboardList, Download, Handshake, Home, MessageSquareWarning, RefreshCw, Search, Users } from 'lucide-react';
+import { downloadReportCsv, getReportsSummary } from '../api/reports';
 import AlertBanner from '../components/ui/AlertBanner';
 import PageHeader from '../components/ui/PageHeader';
-import Panel, { btnGhost, btnPrimary } from '../components/ui/Panel';
+import { btnTool } from '../components/ui/kit';
+import { useApi } from '../hooks/useApi';
+import { fmt } from '../utils/voterFormat';
 
-const TYPES = [
-  { id: 'voters', label: 'Voters', hint: 'Full elector index' },
-  { id: 'booths', label: 'Booths', hint: 'Coverage and agents' },
-  { id: 'issues', label: 'Issues', hint: 'Civic tickets' },
-  { id: 'outreach', label: 'Outreach', hint: 'Field activity' },
+const REPORTS = [
+  { id: 'voters', label: 'Voters', icon: Search, unit: 'voters', one: 'voter', text: 'Every voter with name, relative, voter ID, age, gender, house number, road and status.' },
+  { id: 'booths', label: 'Booths', icon: Building2, unit: 'booths', one: 'booth', text: 'Each polling station with its address, voters, agent, coordinator and how many voters were reached.' },
+  { id: 'households', label: 'Households', icon: Home, unit: 'homes', one: 'home', text: 'Every home with the number of people living there and the eldest member, for planning visits.' },
+  { id: 'outreach', label: 'Contacts', icon: Handshake, unit: 'contacts', one: 'contact', text: 'Every visit, call and message logged with a voter, with the result and who logged it.' },
+  { id: 'issues', label: 'Issues', icon: MessageSquareWarning, unit: 'issues', one: 'issue', text: 'Local problems reported from the field with urgency, progress and the booth they belong to.' },
+  { id: 'team', label: 'Team', icon: Users, unit: 'people', one: 'person', text: 'Coordinators, booth agents and volunteers with phone numbers and the booths they look after.' },
 ];
+const COUNT_KEY = { voters: 'voters', booths: 'booths', households: 'households', outreach: 'outreach', issues: 'issues', team: 'team' };
 
 export default function ReportsPage() {
+  const { data: counts, loading, error, reload } = useApi(getReportsSummary, []);
   const [busy, setBusy] = useState(null);
-  const [last, setLast] = useState(null);
-  const [error, setError] = useState('');
+  const [done, setDone] = useState({});
+  const [failure, setFailure] = useState('');
 
-  async function onDownload(type) {
+  async function download(type) {
     setBusy(type);
-    setError('');
+    setFailure('');
     try {
-      const data = await downloadReportCsv(type);
-      setLast({ type, count: data.count });
+      const result = await downloadReportCsv(type);
+      setDone((d) => ({ ...d, [type]: result.count }));
     } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function onCount(type) {
-    setBusy(type);
-    setError('');
-    try {
-      const data = await getReport(type);
-      setLast({ type, count: data.count, preview: true });
-    } catch (err) {
-      setError(err.message);
+      setFailure(err.message);
     } finally {
       setBusy(null);
     }
   }
 
   return (
-    <section className="space-y-4">
+    <section className="w-full space-y-3">
       <PageHeader
-        eyebrow="Exports"
-        title="Reports"
-        description="Download CSV files for meetings and offline sharing."
+        description="Download a spreadsheet for a meeting or to share. Files open in Excel or Google Sheets."
+        actions={
+          <button type="button" onClick={() => reload({ silent: true })} className={btnTool} aria-label="Refresh counts">
+            <RefreshCw className="h-3.5 w-3.5" />
+          </button>
+        }
       />
-      <AlertBanner tone="danger">{error}</AlertBanner>
-      {last ? (
-        <AlertBanner tone="success">
-          {last.preview ? 'Counted' : 'Downloaded'} {last.type} · {last.count} rows
-        </AlertBanner>
-      ) : null}
 
-      <div className="grid gap-3 sm:grid-cols-2">
-        {TYPES.map((t) => (
-          <Panel
-            key={t.id}
-            className="flex items-center justify-between gap-3 p-4 transition hover:-translate-y-0.5 sm:p-5"
-          >
-            <div className="min-w-0">
-              <p className="font-bold text-[var(--ink)]">{t.label}</p>
-              <p className="text-xs text-[var(--muted)]">{t.hint}</p>
-            </div>
-            <div className="flex shrink-0 gap-2">
-              <button
-                type="button"
-                disabled={busy === t.id}
-                onClick={() => onCount(t.id)}
-                className={btnGhost}
-              >
-                Count
-              </button>
-              <button
-                type="button"
-                disabled={busy === t.id}
-                onClick={() => onDownload(t.id)}
-                className={btnPrimary}
-              >
-                <Download className="mr-1.5 h-3.5 w-3.5" />
-                CSV
-              </button>
-            </div>
-          </Panel>
-        ))}
+      <AlertBanner tone="danger">{error || failure}</AlertBanner>
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        {REPORTS.map(({ id, label, icon: ReportIcon, unit, one, text }) => {
+          const count = counts?.[COUNT_KEY[id]];
+          return (
+            <article key={id} className="flex flex-col rounded-2xl border border-[var(--line)] bg-[var(--bg-elevated)] p-4 shadow-soft">
+              <div className="flex items-start gap-3">
+                <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--bg-muted)] text-[var(--brand)]">
+                  <ReportIcon className="h-5 w-5" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <h2 className="text-sm font-bold text-[var(--ink)]">{label}</h2>
+                  <p className="mt-0.5 text-xs font-semibold text-[var(--muted)]">{loading && !counts ? 'Counting…' : `${fmt(count)} ${count === 1 ? one : unit}`}</p>
+                </div>
+              </div>
+              <p className="mt-3 flex-1 text-sm leading-relaxed text-[var(--ink-soft)]">{text}</p>
+              <div className="mt-4 flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => download(id)}
+                  disabled={busy === id || count === 0}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-[var(--brand)] px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition hover:brightness-110 disabled:opacity-60"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  {busy === id ? 'Preparing…' : 'Download spreadsheet'}
+                </button>
+                {done[id] != null ? <span className="text-xs text-[var(--ok)]">Downloaded {fmt(done[id])} rows</span> : count === 0 ? <span className="text-xs text-[var(--muted)]">Nothing to download yet</span> : null}
+              </div>
+            </article>
+          );
+        })}
       </div>
+
+      <p className="flex items-center gap-2 px-1 text-xs text-[var(--muted)]">
+        <ClipboardList className="h-3.5 w-3.5" />
+        Need only some voters? Use “Download list” on the Voters page: it saves exactly what you have filtered.
+      </p>
     </section>
   );
 }

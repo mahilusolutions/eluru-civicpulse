@@ -8,7 +8,7 @@ const TONES = {
 };
 
 const LABELS = {
-  needs_import: 'Needs CSV',
+  needs_import: 'Needs spreadsheet',
   ready: 'Ready',
   done: 'Done',
   failed: 'Failed',

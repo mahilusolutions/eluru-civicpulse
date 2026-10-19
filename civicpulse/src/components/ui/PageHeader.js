@@ -3,7 +3,7 @@ export default function PageHeader({ description, actions }) {
   if (!description && !actions) return null;
 
   return (
-    <div className="mb-4 flex flex-col gap-3 sm:mb-5 sm:flex-row sm:items-center sm:justify-between">
+    <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
       {description ? (
         <p className="min-w-0 max-w-2xl text-sm leading-relaxed text-[var(--muted)]">
           {description}

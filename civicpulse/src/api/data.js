@@ -29,3 +29,7 @@ export function retryRollFile(id) {
 export function importVotersJson(partNo, voters) {
   return client.post('/data/import', { part_no: partNo, voters }).then(unwrap);
 }
+
+export function getPartRollInfo(partNo) {
+  return client.get(`/parts/${partNo}/roll-info`).then(unwrap);
+}

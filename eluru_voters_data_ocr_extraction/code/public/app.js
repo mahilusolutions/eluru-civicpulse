@@ -1,7 +1,10 @@
 const $ = (id) => document.getElementById(id);
 
-// Behind nginx at /ocr/ — set by server window.__OCR_BASE__ (default "")
-const BASE = String(window.__OCR_BASE__ || '').replace(/\/$/, '');
+// Behind nginx at /ocr/ — set by server window.__OCR_BASE__, or infer from URL path
+const BASE = String(
+  window.__OCR_BASE__ ||
+    (typeof location !== 'undefined' && location.pathname.startsWith('/ocr') ? '/ocr' : '')
+).replace(/\/$/, '');
 const api = (path) => `${BASE}${path.startsWith('/') ? path : `/${path}`}`;
 
 const state = {

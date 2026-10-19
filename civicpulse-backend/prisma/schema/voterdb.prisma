@@ -64,6 +64,8 @@ model Elector {
   age            Int?          @db.SmallInt
   gender         GenderCode?   @default(U)
   pageNo         Int?          @map("page_no")
+  sectionNo      Int?          @map("section_no") @db.SmallInt
+  sectionName    String?       @map("section_name")
   boxIndex       Int?          @map("box_index")
   status         VoterStatus   @default(active)
   supportLean    SupportLean?  @default(unknown) @map("support_lean")

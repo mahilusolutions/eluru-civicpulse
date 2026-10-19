@@ -6,7 +6,7 @@ export function getReport(type) {
 
 export function downloadReportCsv(type) {
   return getReport(type).then((data) => {
-    const blob = new Blob([data.csv || ''], { type: 'text/csv;charset=utf-8;' });
+    const blob = new Blob(['﻿', data.csv || ''],{ type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -15,4 +15,8 @@ export function downloadReportCsv(type) {
     URL.revokeObjectURL(url);
     return data;
   });
+}
+
+export function getReportsSummary() {
+  return client.get('/reports').then(unwrap);
 }

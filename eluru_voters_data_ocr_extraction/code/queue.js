@@ -3,7 +3,7 @@ const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const { ocrPdfToVoters, partFromFilename } = require('./ocrWorker');
 const { broadcast } = require('./events');
-const { saveExtractionToDb, markRollProgress, markRollFailed } = require('./saveToDb');
+const { saveExtractionToDb, markRollProgress, markRollFailed, isRollProcessed } = require('./saveToDb');
 
 const PAGE_WORKERS = Number(process.env.OCR_PAGE_WORKERS) || 3;
 const DPI = Number(process.env.OCR_DPI) || 160;
@@ -106,10 +106,13 @@ function createQueue({ uploadedDir, extractedDir }) {
         try {
           const partNo = job.part_no != null ? job.part_no : Date.now() % 100000;
           let lastDbProgress = 0;
+          const stem = path.parse(job.filename).name;
+          const imageDir = path.join(uploadedDir, 'page_images', stem);
           const result = await ocrPdfToVoters(job.absPath, partNo, {
             dpi: DPI,
             pageWorkers: PAGE_WORKERS,
             startPage: 1,
+            imageDir,
             onProgress: (p) => {
               job.stage = p.stage;
               job.page = p.page || 0;
@@ -168,7 +171,6 @@ function createQueue({ uploadedDir, extractedDir }) {
           });
 
           // Always name outputs after the PDF so any document is easy to find
-          const stem = path.parse(job.filename).name;
           const outName = `${stem}.json`;
           const txtName = `${stem}.txt`;
           const outPath = path.join(extractedDir, outName);
@@ -186,11 +188,11 @@ function createQueue({ uploadedDir, extractedDir }) {
             duration_ms: result.durationMs,
             extracted_at: new Date().toISOString(),
             job_id: job.id,
-            // Full OCR — every page, all text Tesseract returned
             pages: result.pages,
             full_text: result.full_text,
-            // Bonus: structured voters when the PDF looks like an ECI roll
             voters: result.voters,
+            roll_info: result.roll_info || null,
+            page_images_dir: imageDir,
           };
           // Optional disk backup (default on). Set OCR_SAVE_DISK=0 to DB-only.
           const saveDisk = process.env.OCR_SAVE_DISK !== '0';
@@ -331,12 +333,16 @@ function createQueue({ uploadedDir, extractedDir }) {
     );
   }
 
-  /** Re-queue PDFs on disk that have no JSON yet (survives PM2 restart). */
-  function recoverPendingFromDisk() {
+  /**
+   * Queue PDFs on disk that still need reading (survives a restart). Files already extracted
+   * into the database are left alone.
+   */
+  async function recoverPendingFromDisk() {
     const recovered = [];
     for (const row of listDiskFiles()) {
       if (row.extracted) continue;
       if (isQueuedOrActive(row.filename)) continue;
+      if (await isRollProcessed(row.filename)) continue;
       const abs = path.join(uploadedDir, row.filename);
       recovered.push(enqueue(row.filename, abs));
     }

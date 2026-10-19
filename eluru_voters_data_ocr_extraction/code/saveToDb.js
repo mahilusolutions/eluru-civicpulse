@@ -3,8 +3,10 @@
  * Disk JSON/TXT remain optional backups.
  */
 const { Pool } = require('pg');
+const { parseEciOcrText, parseRollCover } = require('./ocrWorker');
 
 let pool = null;
+let schemaReady = false;
 
 function getPool() {
   if (pool) return pool;
@@ -55,6 +57,16 @@ function isJunkElectorName(n) {
   return letters < 3;
 }
 
+async function ensureElectorExtraColumns(client) {
+  if (schemaReady) return;
+  await client.query(`
+    ALTER TABLE voterdb.electors
+      ADD COLUMN IF NOT EXISTS section_no smallint,
+      ADD COLUMN IF NOT EXISTS section_name text
+  `);
+  schemaReady = true;
+}
+
 /**
  * @param {object} payload - same shape as extracted JSON
  * @param {{ storagePath?: string }} opts
@@ -70,9 +82,12 @@ async function saveExtractionToDb(payload, opts = {}) {
   try {
     await client.query('BEGIN');
     await client.query('CREATE SCHEMA IF NOT EXISTS voterdb');
+    await ensureElectorExtraColumns(client);
 
     const filename = payload.filename;
     const partNo = payload.part_no != null ? Number(payload.part_no) : null;
+    const pages = Array.isArray(payload.pages) ? payload.pages : [];
+    const rollInfo = payload.roll_info || parseRollCover(pages);
 
     // Upsert document by filename
     const docRes = await client.query(
@@ -118,6 +133,8 @@ async function saveExtractionToDb(payload, opts = {}) {
         payload.extracted_at || null,
         JSON.stringify({
           page_workers: payload.page_workers,
+          roll_info: rollInfo,
+          page_images_dir: payload.page_images_dir || null,
         }),
       ]
     );
@@ -126,7 +143,6 @@ async function saveExtractionToDb(payload, opts = {}) {
     await client.query(`DELETE FROM voterdb.extracted_pages WHERE document_id = $1`, [documentId]);
     await client.query(`DELETE FROM voterdb.electors WHERE document_id = $1`, [documentId]);
 
-    const pages = Array.isArray(payload.pages) ? payload.pages : [];
     for (const page of pages) {
       await client.query(
         `INSERT INTO voterdb.extracted_pages (document_id, page_no, image, char_count, text)
@@ -153,11 +169,14 @@ async function saveExtractionToDb(payload, opts = {}) {
       await client.query(
         `INSERT INTO voterdb.electors (
            document_id, part_no, serial_no, epic, name, name_normalized,
-           relation_type, relation_name, house_no, age, gender, status, raw_ocr_text, raw_json
+           relation_type, relation_name, house_no, age, gender,
+           page_no, section_no, section_name,
+           status, raw_ocr_text, raw_json
          ) VALUES (
            $1, $2, $3, $4, $5, lower(trim(regexp_replace($5, '\\s+', ' ', 'g'))),
            $6::voterdb.relation_type, $7, $8, $9, $10::voterdb.gender_code,
-           $11::voterdb.voter_status, $12, $13::jsonb
+           $11, $12, $13,
+           $14::voterdb.voter_status, $15, $16::jsonb
          )
          ON CONFLICT (part_no, serial_no) DO UPDATE SET
            document_id = EXCLUDED.document_id,
@@ -169,6 +188,9 @@ async function saveExtractionToDb(payload, opts = {}) {
            house_no = EXCLUDED.house_no,
            age = EXCLUDED.age,
            gender = EXCLUDED.gender,
+           page_no = EXCLUDED.page_no,
+           section_no = EXCLUDED.section_no,
+           section_name = EXCLUDED.section_name,
            status = EXCLUDED.status,
            raw_ocr_text = EXCLUDED.raw_ocr_text,
            raw_json = EXCLUDED.raw_json,
@@ -184,6 +206,9 @@ async function saveExtractionToDb(payload, opts = {}) {
           v.house_no || null,
           sanitizeAge(v.age),
           sanitizeGender(v.gender),
+          v.page_no != null ? Number(v.page_no) : null,
+          v.section_no != null ? Number(v.section_no) : null,
+          v.section_name ? String(v.section_name).slice(0, 200) : null,
           sanitizeStatus(v.status),
           v.raw_ocr_text || null,
           JSON.stringify(v),
@@ -193,13 +218,23 @@ async function saveExtractionToDb(payload, opts = {}) {
 
     // Ensure public booth row for this part (app lists)
     if (partNo != null) {
+      const area =
+        (rollInfo?.sections && rollInfo.sections[0]?.section_name) ||
+        rollInfo?.main_town ||
+        `Part ${partNo}`;
+      const station =
+        rollInfo?.polling_station || `Polling Station Part ${partNo}`;
       await client.query(
-        `INSERT INTO public.booths (part_no, area_name, polling_station_name, status, voter_count)
-         VALUES ($1, $2, $3, 'pending', $4)
+        `INSERT INTO public.booths (
+           part_no, area_name, polling_station_name, polling_station_address, status, voter_count
+         ) VALUES ($1, $2, $3, $4, 'pending', $5)
          ON CONFLICT (part_no) DO UPDATE SET
+           area_name = COALESCE(EXCLUDED.area_name, public.booths.area_name),
+           polling_station_name = COALESCE(EXCLUDED.polling_station_name, public.booths.polling_station_name),
+           polling_station_address = COALESCE(EXCLUDED.polling_station_address, public.booths.polling_station_address),
            voter_count = EXCLUDED.voter_count,
            updated_at = NOW()`,
-        [partNo, `Part ${partNo}`, `Polling Station Part ${partNo}`, savedElectors]
+        [partNo, area, station, rollInfo?.polling_address || null, savedElectors]
       );
     }
 
@@ -260,6 +295,28 @@ async function saveExtractionToDb(payload, opts = {}) {
 /**
  * Mark a roll file as OCR-in-progress (so Data page leaves "Queued").
  */
+/**
+ * True when this roll file has already been extracted into the database. The queue uses it so a
+ * restart (or the API asking the service to "recover") never reads the same PDF a second time and
+ * overwrites good data. A new upload or the Retry button sets the status back to "queued" first.
+ */
+async function isRollProcessed(filename) {
+  const p = getPool();
+  if (!p) return false;
+  try {
+    const res = await p.query(
+      `SELECT 1 FROM voterdb.roll_files
+        WHERE filename = $1 AND parse_status IN ('ready', 'needs_import') LIMIT 1`,
+      [filename]
+    );
+    return res.rowCount > 0;
+  } catch (err) {
+    // If the database cannot be asked, do not start a long extraction that could not be saved anyway.
+    console.warn('isRollProcessed:', err.message);
+    return true;
+  }
+}
+
 async function markRollProgress(filename, { page = 0, total = 0, stage = 'ocr' } = {}) {
   const p = getPool();
   if (!p || !filename) return { skipped: true };
@@ -295,4 +352,143 @@ async function markRollFailed(filename, message) {
   }
 }
 
-module.exports = { saveExtractionToDb, markRollProgress, markRollFailed, getPool };
+/**
+ * Re-parse stored page OCR text to fill section/road, page_no, and roll cover
+ * without re-running Tesseract.
+ */
+async function enrichDocumentFromStoredPages(documentId) {
+  const p = getPool();
+  if (!p) return { skipped: true };
+  const client = await p.connect();
+  try {
+    await ensureElectorExtraColumns(client);
+    const docRes = await client.query(
+      `SELECT id, filename, part_no, full_text, raw_meta
+       FROM voterdb.extracted_documents WHERE id = $1`,
+      [documentId]
+    );
+    if (!docRes.rows[0]) return { ok: false, error: 'document not found' };
+    const doc = docRes.rows[0];
+    const pagesRes = await client.query(
+      `SELECT page_no AS page, image, char_count, text
+       FROM voterdb.extracted_pages WHERE document_id = $1 ORDER BY page_no`,
+      [documentId]
+    );
+    const pages = pagesRes.rows;
+    const fullText =
+      doc.full_text ||
+      pages.map((pg) => `===== PAGE ${pg.page} =====\n${pg.text || ''}`.trimEnd()).join('\n\n');
+    const partNo = doc.part_no != null ? Number(doc.part_no) : null;
+    const voters = parseEciOcrText(fullText, partNo);
+    const rollInfo = parseRollCover(pages);
+
+    await client.query('BEGIN');
+    let updated = 0;
+    for (const v of voters) {
+      if (!v?.name || isJunkElectorName(v.name)) continue;
+      const serial = v.serial_no != null ? Number(v.serial_no) : null;
+      if (serial == null || partNo == null) continue;
+      const res = await client.query(
+        `UPDATE voterdb.electors SET
+           page_no = COALESCE($3, page_no),
+           section_no = COALESCE($4, section_no),
+           section_name = COALESCE($5, section_name),
+           epic = COALESCE(NULLIF($6, ''), epic),
+           relation_type = COALESCE($7::voterdb.relation_type, relation_type),
+           relation_name = COALESCE($8, relation_name),
+           house_no = COALESCE($9, house_no),
+           age = COALESCE($10, age),
+           gender = COALESCE($11::voterdb.gender_code, gender),
+           raw_ocr_text = COALESCE($12, raw_ocr_text),
+           raw_json = COALESCE($13::jsonb, raw_json),
+           updated_at = NOW()
+         WHERE part_no = $1 AND serial_no = $2`,
+        [
+          partNo,
+          serial,
+          v.page_no != null ? Number(v.page_no) : null,
+          v.section_no != null ? Number(v.section_no) : null,
+          v.section_name || null,
+          v.epic || '',
+          sanitizeRelation(v.relation_type),
+          v.relation_name || null,
+          v.house_no || null,
+          sanitizeAge(v.age),
+          sanitizeGender(v.gender),
+          v.raw_ocr_text || null,
+          JSON.stringify(v),
+        ]
+      );
+      updated += res.rowCount || 0;
+    }
+
+    const prevMeta = doc.raw_meta && typeof doc.raw_meta === 'object' ? doc.raw_meta : {};
+    await client.query(
+      `UPDATE voterdb.extracted_documents
+       SET raw_meta = $2::jsonb
+       WHERE id = $1`,
+      [documentId, JSON.stringify({ ...prevMeta, roll_info: rollInfo })]
+    );
+
+    if (partNo != null) {
+      const area =
+        (rollInfo?.sections && rollInfo.sections[0]?.section_name) ||
+        rollInfo?.main_town ||
+        `Part ${partNo}`;
+      await client.query(
+        `UPDATE public.booths SET
+           area_name = COALESCE($2, area_name),
+           polling_station_name = COALESCE($3, polling_station_name),
+           polling_station_address = COALESCE($4, polling_station_address),
+           updated_at = NOW()
+         WHERE part_no = $1`,
+        [
+          partNo,
+          area,
+          rollInfo?.polling_station || null,
+          rollInfo?.polling_address || null,
+        ]
+      );
+    }
+
+    await client.query('COMMIT');
+    return {
+      ok: true,
+      documentId: Number(documentId),
+      updated,
+      voters: voters.length,
+      sections: rollInfo?.sections?.length || 0,
+    };
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      /* ignore */
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+async function enrichAllDocuments() {
+  const p = getPool();
+  if (!p) return { skipped: true };
+  const docs = await p.query(`SELECT id FROM voterdb.extracted_documents ORDER BY id`);
+  const results = [];
+  for (const row of docs.rows) {
+    results.push(await enrichDocumentFromStoredPages(row.id));
+  }
+  return { ok: true, documents: results.length, results };
+}
+
+module.exports = {
+  saveExtractionToDb,
+  markRollProgress,
+  markRollFailed,
+  isRollProcessed,
+  getPool,
+  enrichDocumentFromStoredPages,
+  enrichAllDocuments,
+  ensureElectorExtraColumns,
+};

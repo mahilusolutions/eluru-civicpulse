@@ -7,13 +7,62 @@ const { Prisma } = require('@prisma/client');
 const { prisma, initDb, DATABASE_URL } = require('./db');
 const { serialize } = require('./lib/serialize');
 const { parseFilename } = require('./services/parseFilename');
+const { findPdftoppm } = require('./lib/poppler');
+const { splitHouse } = require('./lib/house');
+
+/** House number and address note as separate fields (the roll mixes them in one). */
+function houseFields(raw) {
+  const { number, note } = splitHouse(raw);
+  return { house_number: number, address_note: note };
+}
 
 const app = express();
 const PORT = process.env.PORT || 4000;
 const OCR_UPLOAD_DIR =
   process.env.OCR_UPLOAD_DIR ||
   path.resolve(__dirname, '../eluru_voters_data_ocr_extraction/uploaded_files');
+const OCR_PAGE_IMAGES_DIR =
+  process.env.OCR_PAGE_IMAGES_DIR || path.join(OCR_UPLOAD_DIR, 'page_images');
 const OCR_EXTRACT_URL = process.env.OCR_EXTRACT_URL || 'http://127.0.0.1:2000';
+
+function pageImagePath(filename, pageNo) {
+  if (!filename || pageNo == null) return null;
+  const stem = path.parse(filename).name;
+  const file = path.join(OCR_PAGE_IMAGES_DIR, stem, `page-${pageNo}.png`);
+  return fs.existsSync(file) ? file : null;
+}
+
+/** Fill section/page fields if Prisma client predates those columns. */
+async function hydrateElectorExtras(rows) {
+  const list = Array.isArray(rows) ? rows : rows ? [rows] : [];
+  if (!list.length) return rows;
+  const ids = list.map((r) => r.id).filter((id) => id != null);
+  if (!ids.length) return rows;
+  try {
+    const extras = await prisma.$queryRaw`
+      SELECT id, section_no, section_name, page_no
+      FROM voterdb.electors
+      WHERE id IN (${Prisma.join(ids.map((id) => BigInt(id)))})
+    `;
+    const map = new Map(extras.map((e) => [String(e.id), e]));
+    for (const row of list) {
+      const ex = map.get(String(row.id));
+      if (!ex) continue;
+      if (row.sectionNo == null && row.section_no == null) {
+        row.sectionNo = ex.section_no != null ? Number(ex.section_no) : null;
+      }
+      if (row.sectionName == null && row.section_name == null) {
+        row.sectionName = ex.section_name || null;
+      }
+      if (row.pageNo == null && row.page_no == null) {
+        row.pageNo = ex.page_no != null ? Number(ex.page_no) : null;
+      }
+    }
+  } catch (err) {
+    console.warn('hydrateElectorExtras:', err.message);
+  }
+  return rows;
+}
 
 app.use(cors());
 app.use(express.json({ limit: '20mb' }));
@@ -50,55 +99,6 @@ app.get(
       city: 'Eluru',
       db: 'postgresql+prisma',
       schemas: ['public', 'voterdb'],
-    });
-  })
-);
-
-app.get(
-  '/api/dashboard/summary',
-  asyncHandler(async (_req, res) => {
-    const [booths, electors, coverage, openIssues, files] = await Promise.all([
-      prisma.booth.count(),
-      prisma.elector.count(),
-      prisma.booth.aggregate({ _avg: { coveragePct: true } }),
-      prisma.issue.count({ where: { NOT: { status: 'Resolved' } } }),
-      prisma.rollFile.count(),
-    ]);
-    const topBooths = await prisma.booth.findMany({
-      orderBy: { coveragePct: 'desc' },
-      take: 8,
-      select: {
-        partNo: true,
-        areaName: true,
-        agentName: true,
-        coveragePct: true,
-        voterCount: true,
-        status: true,
-      },
-    });
-    const recentIssues = await prisma.issue.findMany({
-      orderBy: { id: 'desc' },
-      take: 8,
-      select: {
-        id: true,
-        title: true,
-        priority: true,
-        status: true,
-        partNo: true,
-        createdAt: true,
-      },
-    });
-    const avg = coverage._avg.coveragePct ? Number(coverage._avg.coveragePct) : 0;
-    ok(res, {
-      stats: [
-        { label: 'Booth parts', value: String(booths), hint: 'Parts with rolls loaded' },
-        { label: 'Voters', value: String(electors), hint: 'People on the voter list' },
-        { label: 'Avg coverage', value: `${Math.round(avg)}%`, hint: 'Door visits done' },
-        { label: 'Open issues', value: String(openIssues), hint: 'Problems still open' },
-      ],
-      files,
-      topBooths,
-      recentIssues,
     });
   })
 );
@@ -390,32 +390,229 @@ app.post(
 );
 
 // ---------- Electors (Voters UI) ----------
+const VOTER_STATUSES = ['active', 'visited', 'callback', 'shifted', 'deceased', 'duplicate', 'inactive'];
+const VOTER_GENDERS = ['M', 'F', 'O', 'U'];
+const VOTER_LEANS = ['strong_yes', 'lean_yes', 'undecided', 'lean_no', 'strong_no', 'unknown'];
+const VOTER_RELATIONS = ['father', 'mother', 'husband', 'other'];
+const AGE_BANDS = {
+  '18-24': [18, 24],
+  '25-34': [25, 34],
+  '35-44': [35, 44],
+  '45-59': [45, 59],
+  '60+': [60, 200],
+};
+const AGE_BAND_CASE = Prisma.raw(
+  "CASE WHEN age < 25 THEN '18-24' WHEN age < 35 THEN '25-34' WHEN age < 45 THEN '35-44' WHEN age < 60 THEN '45-59' ELSE '60+' END"
+);
+const VOTER_SORTS = {
+  serial: 'serial_no',
+  name: 'LOWER(name)',
+  age: 'age',
+  house: 'house_no',
+  part: 'part_no',
+};
+
+/**
+ * Build the WHERE clause shared by list, stats and export.
+ * `omit` drops one filter so a chart can show its own alternatives
+ * (e.g. the gender split while a gender filter is active).
+ */
+function voterWhere(query = {}, omit = null) {
+  const c = [Prisma.sql`TRUE`];
+  const q = String(query.q || '').trim();
+  if (query.part && query.part !== 'all' && Number.isFinite(Number(query.part))) {
+    c.push(Prisma.sql`part_no = ${Number(query.part)}`);
+  }
+  if (
+    omit !== 'section' &&
+    query.section &&
+    query.section !== 'all' &&
+    Number.isFinite(Number(query.section))
+  ) {
+    c.push(Prisma.sql`section_no = ${Number(query.section)}`);
+  }
+  if (omit !== 'status' && VOTER_STATUSES.includes(query.status)) {
+    c.push(Prisma.sql`status = ${query.status}::voterdb.voter_status`);
+  }
+  if (omit !== 'gender' && VOTER_GENDERS.includes(query.gender)) {
+    c.push(Prisma.sql`gender = ${query.gender}::voterdb.gender_code`);
+  }
+  if (omit !== 'support' && VOTER_LEANS.includes(query.support)) {
+    c.push(Prisma.sql`support_lean = ${query.support}::voterdb.support_lean`);
+  }
+  if (omit !== 'age' && AGE_BANDS[query.age]) {
+    const [lo, hi] = AGE_BANDS[query.age];
+    c.push(Prisma.sql`age BETWEEN ${lo} AND ${hi}`);
+  }
+  if (omit !== 'missing') {
+    const m = query.missing;
+    if (m === 'epic') c.push(Prisma.sql`(epic IS NULL OR epic = '')`);
+    else if (m === 'age') c.push(Prisma.sql`age IS NULL`);
+    else if (m === 'house') c.push(Prisma.sql`(house_no IS NULL OR house_no = '')`);
+    else if (m === 'gender') c.push(Prisma.sql`gender = 'U'::voterdb.gender_code`);
+    else if (m === 'any') {
+      c.push(
+        Prisma.sql`(epic IS NULL OR epic = '' OR age IS NULL OR house_no IS NULL OR house_no = '' OR gender = 'U'::voterdb.gender_code)`
+      );
+    }
+  }
+  if (q) {
+    const like = `%${q.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
+    const serial = /^\d{1,7}$/.test(q) ? Number(q) : null;
+    c.push(
+      serial != null
+        ? Prisma.sql`(name ILIKE ${like} OR epic ILIKE ${like} OR house_no ILIKE ${like} OR relation_name ILIKE ${like} OR section_name ILIKE ${like} OR serial_no = ${serial})`
+        : Prisma.sql`(name ILIKE ${like} OR epic ILIKE ${like} OR house_no ILIKE ${like} OR relation_name ILIKE ${like} OR section_name ILIKE ${like})`
+    );
+  }
+  return Prisma.sql`WHERE ${Prisma.join(c, ' AND ')}`;
+}
+
+const VOTER_LIST_COLUMNS = Prisma.raw(`id, document_id, part_no, serial_no, epic, name,
+  relation_type::text AS relation_type, relation_name, house_no, age, gender::text AS gender,
+  page_no, section_no, section_name, status::text AS status, support_lean::text AS support_lean, phone`);
+
+function voterOrder(query) {
+  const col = VOTER_SORTS[query.sort] || VOTER_SORTS.serial;
+  const dir = query.dir === 'desc' ? 'DESC' : 'ASC';
+  return Prisma.raw(`ORDER BY ${col} ${dir} NULLS LAST, part_no ASC, serial_no ASC`);
+}
+
 app.get(
   '/api/voters',
   asyncHandler(async (req, res) => {
-    const q = (req.query.q || '').trim();
-    const part = req.query.part;
-    const status = req.query.status;
-    const limit = Math.min(Number(req.query.limit) || 100, 500);
-    const where = {};
-    if (part && part !== 'all') where.partNo = Number(part);
-    if (status && status !== 'all') where.status = status;
-    if (q) {
-      where.OR = [
-        { name: { contains: q, mode: 'insensitive' } },
-        { epic: { contains: q, mode: 'insensitive' } },
-        { houseNo: { contains: q, mode: 'insensitive' } },
-      ];
-    }
-    const [rows, total] = await Promise.all([
-      prisma.elector.findMany({
-        where,
-        orderBy: [{ partNo: 'asc' }, { serialNo: 'asc' }],
-        take: limit,
-      }),
-      prisma.elector.count(),
+    const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 500);
+    const page = Math.max(Number(req.query.page) || 1, 1);
+    const offset =
+      req.query.offset != null ? Math.max(Number(req.query.offset) || 0, 0) : (page - 1) * limit;
+    const where = voterWhere(req.query);
+    const [rows, totalRows] = await Promise.all([
+      prisma.$queryRaw`SELECT ${VOTER_LIST_COLUMNS} FROM voterdb.electors ${where} ${voterOrder(
+        req.query
+      )} LIMIT ${limit} OFFSET ${offset}`,
+      prisma.$queryRaw`SELECT COUNT(*)::int AS n FROM voterdb.electors ${where}`,
     ]);
-    ok(res, { rows, total, count: rows.length });
+    ok(res, {
+      rows: rows.map((r) => ({ ...r, ...houseFields(r.house_no) })),
+      total: totalRows[0].n,
+      count: rows.length,
+      page: Math.floor(offset / limit) + 1,
+      page_size: limit,
+    });
+  })
+);
+
+app.get(
+  '/api/voters/stats',
+  asyncHandler(async (req, res) => {
+    const q = req.query;
+    const all = voterWhere(q);
+    const byGender = voterWhere(q, 'gender');
+    const byAge = voterWhere(q, 'age');
+    const bySection = voterWhere(q, 'section');
+    const byStatus = voterWhere(q, 'status');
+    const bySupport = voterWhere(q, 'support');
+
+    const [summary, genders, ageGender, sections, parts, statuses, supports] = await Promise.all([
+      prisma.$queryRaw`
+        SELECT COUNT(*)::int AS total,
+               ROUND(AVG(age)::numeric, 1)::float AS avg_age,
+               COUNT(*) FILTER (WHERE epic IS NOT NULL AND epic <> '')::int AS with_epic,
+               COUNT(age)::int AS with_age,
+               COUNT(*) FILTER (WHERE house_no IS NOT NULL AND house_no <> '')::int AS with_house,
+               COUNT(*) FILTER (WHERE gender <> 'U'::voterdb.gender_code)::int AS with_gender,
+               COUNT(*) FILTER (WHERE epic IS NULL OR epic = '' OR age IS NULL OR house_no IS NULL
+                                 OR house_no = '' OR gender = 'U'::voterdb.gender_code)::int AS needs_check,
+               COUNT(DISTINCT (part_no, house_no)) FILTER (WHERE house_no IS NOT NULL AND house_no <> '')::int AS households,
+               COUNT(DISTINCT part_no)::int AS parts
+        FROM voterdb.electors ${all}`,
+      prisma.$queryRaw`
+        SELECT gender::text AS key, COUNT(*)::int AS count
+        FROM voterdb.electors ${byGender} GROUP BY 1`,
+      prisma.$queryRaw`
+        SELECT ${AGE_BAND_CASE} AS band, gender::text AS gender, COUNT(*)::int AS count
+        FROM voterdb.electors ${Prisma.sql`${byAge} AND age IS NOT NULL`}
+        GROUP BY 1, 2`,
+      prisma.$queryRaw`
+        SELECT part_no, section_no, section_name, COUNT(*)::int AS count
+        FROM voterdb.electors ${Prisma.sql`${bySection} AND section_no IS NOT NULL`}
+        GROUP BY 1, 2, 3 ORDER BY part_no, section_no LIMIT 400`,
+      prisma.$queryRaw`
+        SELECT part_no, COUNT(*)::int AS count
+        FROM voterdb.electors ${all} GROUP BY 1 ORDER BY count DESC, part_no LIMIT 15`,
+      prisma.$queryRaw`
+        SELECT status::text AS key, COUNT(*)::int AS count
+        FROM voterdb.electors ${byStatus} GROUP BY 1`,
+      prisma.$queryRaw`
+        SELECT support_lean::text AS key, COUNT(*)::int AS count
+        FROM voterdb.electors ${bySupport} GROUP BY 1`,
+    ]);
+
+    const bands = Object.keys(AGE_BANDS).map((band) => {
+      const row = { band, male: 0, female: 0, unknown: 0, total: 0 };
+      for (const r of ageGender) {
+        if (r.band !== band) continue;
+        const g = r.gender === 'M' ? 'male' : r.gender === 'F' ? 'female' : 'unknown';
+        row[g] += r.count;
+        row.total += r.count;
+      }
+      return row;
+    });
+
+    ok(res, { ...summary[0], genders, age_bands: bands, sections, parts, statuses, supports });
+  })
+);
+
+app.get(
+  '/api/voters/export',
+  asyncHandler(async (req, res) => {
+    const rows = await prisma.$queryRaw`SELECT ${VOTER_LIST_COLUMNS} FROM voterdb.electors ${voterWhere(
+      req.query
+    )} ${voterOrder(req.query)} LIMIT 50000`;
+    const head = [
+      'Booth',
+      'Serial',
+      'Voter ID',
+      'Name',
+      'Relation',
+      'Relative name',
+      'House number',
+      'Address note',
+      'Age',
+      'Gender',
+      'Road',
+      'Status',
+      'Support',
+      'Phone',
+    ];
+    const cell = (v) => {
+      const t = v == null ? '' : String(v);
+      return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+    };
+    const lines = [head.join(',')];
+    for (const r of rows) {
+      lines.push(
+        [
+          r.part_no,
+          r.serial_no,
+          r.epic,
+          r.name,
+          r.relation_type,
+          r.relation_name,
+          splitHouse(r.house_no).number,
+          splitHouse(r.house_no).note,
+          r.age,
+          r.gender,
+          r.section_name,
+          r.status,
+          r.support_lean,
+          r.phone,
+        ]
+          .map(cell)
+          .join(',')
+      );
+    }
+    ok(res, { count: rows.length, csv: lines.join('\n') });
   })
 );
 
@@ -424,11 +621,220 @@ app.get(
   asyncHandler(async (req, res) => {
     const voter = await prisma.elector.findUnique({ where: { id: BigInt(req.params.id) } });
     if (!voter) return fail(res, 404, 'Voter not found');
+    await hydrateElectorExtras(voter);
     const outreach = await prisma.outreach.findMany({
       where: { electorId: voter.id },
       orderBy: { id: 'desc' },
     });
-    ok(res, { ...voter, outreach });
+
+    let roll_info = null;
+    let page_image_url = null;
+    let cover_pages = [];
+    if (voter.documentId) {
+      const doc = await prisma.extractedDocument.findUnique({
+        where: { id: voter.documentId },
+        select: { id: true, filename: true, rawMeta: true, partNo: true },
+      });
+      const meta = doc?.rawMeta && typeof doc.rawMeta === 'object' ? doc.rawMeta : {};
+      roll_info = meta.roll_info || null;
+      if (doc?.filename && voter.pageNo != null) {
+        const img = pageImagePath(doc.filename, voter.pageNo);
+        if (img) page_image_url = `/api/documents/${doc.id}/pages/${voter.pageNo}/image`;
+      }
+      const pages = await prisma.extractedPage.findMany({
+        where: { documentId: voter.documentId, pageNo: { in: [1, 2] } },
+        orderBy: { pageNo: 'asc' },
+        select: { pageNo: true, text: true, charCount: true, image: true },
+      });
+      cover_pages = pages.map((p) => ({
+        page_no: p.pageNo,
+        text: p.text,
+        char_count: p.charCount,
+        image_url: `/api/documents/${doc.id}/pages/${p.pageNo}/image`,
+      }));
+      if (!page_image_url && voter.pageNo != null) {
+        page_image_url = `/api/documents/${doc.id}/pages/${voter.pageNo}/image`;
+      }
+    }
+
+    let household = [];
+    if (voter.houseNo) {
+      household = await prisma.$queryRaw`
+        SELECT id, name, age, gender::text AS gender, relation_type::text AS relation_type,
+               relation_name, status::text AS status
+        FROM voterdb.electors
+        WHERE part_no = ${voter.partNo} AND house_no = ${voter.houseNo} AND id <> ${voter.id}
+        ORDER BY serial_no LIMIT 15`;
+    }
+
+    ok(res, {
+      ...voter,
+      card_image_url: voter.documentId && voter.pageNo != null ? `/api/voters/${voter.id}/card-image` : null,
+      ...houseFields(voter.houseNo),
+      household,
+      outreach,
+      roll_info,
+      page_image_url,
+      cover_pages,
+      road:
+        voter.sectionName != null
+          ? `${voter.sectionNo != null ? `${voter.sectionNo}-` : ''}${voter.sectionName}`
+          : null,
+    });
+  })
+);
+
+// A voter's own card, cropped from the roll PDF (small image, cached on disk).
+// Cards sit on a fixed 3 x 10 grid; positions are fractions of the page.
+const CARD_COL_LEFT = [0.0248, 0.3447, 0.6638];
+const CARD_ROW_TOP = [0.034, 0.1285, 0.2225, 0.317, 0.411, 0.505, 0.5995, 0.6935, 0.7875, 0.882];
+
+function pdfPageSize(pdftoppm, pdfPath) {
+  const { spawnSync } = require('child_process');
+  const pdfinfo = path.join(path.dirname(pdftoppm), path.basename(pdftoppm).replace(/pdftoppm/i, 'pdfinfo'));
+  const out = spawnSync(fs.existsSync(pdfinfo) ? pdfinfo : 'pdfinfo', [pdfPath], { windowsHide: true, timeout: 20000 });
+  const m = String(out.stdout || '').match(/Page size:\s*([\d.]+)\s*x\s*([\d.]+)/i);
+  return m ? { w: Number(m[1]), h: Number(m[2]) } : { w: 595.3, h: 841.9 }; // A4
+}
+
+app.get(
+  '/api/voters/:id/card-image',
+  asyncHandler(async (req, res) => {
+    const voter = await prisma.elector.findUnique({
+      where: { id: BigInt(req.params.id) },
+      select: { documentId: true, pageNo: true, serialNo: true },
+    });
+    if (!voter?.documentId || voter.pageNo == null) return fail(res, 404, 'Card not available');
+    const doc = await prisma.extractedDocument.findUnique({
+      where: { id: voter.documentId },
+      select: { filename: true, storagePath: true },
+    });
+    if (!doc) return fail(res, 404, 'Card not available');
+
+    const stem = path.parse(doc.filename).name;
+    const cacheDir = path.join(OCR_PAGE_IMAGES_DIR, stem);
+    const cached = path.join(cacheDir, `card-${voter.serialNo}.png`);
+    if (!fs.existsSync(cached)) {
+      const pdfPath =
+        (doc.storagePath && fs.existsSync(doc.storagePath) && doc.storagePath) ||
+        path.join(OCR_UPLOAD_DIR, doc.filename);
+      if (!fs.existsSync(pdfPath)) return fail(res, 404, 'Roll file not available');
+
+      const first = await prisma.$queryRaw`
+        SELECT MIN(serial_no)::int AS n FROM voterdb.electors
+        WHERE document_id = ${voter.documentId} AND page_no = ${voter.pageNo}`;
+      const slot = voter.serialNo - (first[0]?.n ?? voter.serialNo);
+      if (slot < 0 || slot > 29) return fail(res, 404, 'Card not available');
+
+      const pdftoppm = findPdftoppm();
+      const dpi = 220;
+      const size = pdfPageSize(pdftoppm, pdfPath);
+      const pxW = (size.w * dpi) / 72;
+      const pxH = (size.h * dpi) / 72;
+      const col = slot % 3;
+      const row = Math.floor(slot / 3);
+      const x = Math.max(0, Math.round((CARD_COL_LEFT[col] - 0.004) * pxW));
+      const y = Math.max(0, Math.round((CARD_ROW_TOP[row] - 0.003) * pxH));
+      const w = Math.round(0.318 * pxW);
+      const h = Math.round(0.096 * pxH);
+
+      fs.mkdirSync(cacheDir, { recursive: true });
+      const { spawnSync } = require('child_process');
+      const prefix = path.join(cacheDir, `card-${voter.serialNo}`);
+      const run = spawnSync(
+        pdftoppm,
+        ['-png', '-r', String(dpi), '-f', String(voter.pageNo), '-l', String(voter.pageNo), '-x', String(x), '-y', String(y), '-W', String(w), '-H', String(h), '-singlefile', pdfPath, prefix],
+        { windowsHide: true, timeout: 60000 }
+      );
+      if (run.error) console.warn('card image render:', run.error.message);
+      if (!fs.existsSync(cached)) return fail(res, 404, 'Card image not available');
+    }
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    return res.sendFile(path.resolve(cached));
+  })
+);
+
+app.get(
+  '/api/documents/:id/pages/:pageNo/image',
+  asyncHandler(async (req, res) => {
+    const doc = await prisma.extractedDocument.findUnique({
+      where: { id: BigInt(req.params.id) },
+      select: { filename: true, storagePath: true },
+    });
+    if (!doc) return fail(res, 404, 'Document not found');
+    const pageNo = Number(req.params.pageNo);
+    let img = pageImagePath(doc.filename, pageNo);
+    if (!img) {
+      // Try generate once from stored PDF (cover / voter page preview)
+      const pdfPath =
+        (doc.storagePath && fs.existsSync(doc.storagePath) && doc.storagePath) ||
+        path.join(OCR_UPLOAD_DIR, doc.filename);
+      if (fs.existsSync(pdfPath)) {
+        try {
+          const { spawnSync } = require('child_process');
+          const stem = path.parse(doc.filename).name;
+          const outDir = path.join(OCR_PAGE_IMAGES_DIR, stem);
+          fs.mkdirSync(outDir, { recursive: true });
+          const outPrefix = path.join(outDir, `page-${pageNo}`);
+          const pdftoppm = findPdftoppm();
+          const rendered = spawnSync(
+            pdftoppm,
+            ['-png', '-r', '200', '-f', String(pageNo), '-l', String(pageNo), '-singlefile', pdfPath, outPrefix],
+            { windowsHide: true, timeout: 60000 }
+          );
+          if (rendered.error) console.warn('page image render:', rendered.error.message);
+          img = pageImagePath(doc.filename, pageNo);
+        } catch (err) {
+          console.warn('page image render:', err.message);
+        }
+      }
+    }
+    if (!img) return fail(res, 404, 'Page image not available');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    return res.sendFile(path.resolve(img));
+  })
+);
+
+app.get(
+  '/api/parts/:part/roll-info',
+  asyncHandler(async (req, res) => {
+    const partNo = Number(req.params.part);
+    const doc = await prisma.extractedDocument.findFirst({
+      where: { partNo },
+      orderBy: { id: 'desc' },
+      select: { id: true, filename: true, rawMeta: true, pageCount: true },
+    });
+    if (!doc) return fail(res, 404, 'No roll for this part');
+    const meta = doc.rawMeta && typeof doc.rawMeta === 'object' ? doc.rawMeta : {};
+    const pages = await prisma.extractedPage.findMany({
+      where: { documentId: doc.id, pageNo: { in: [1, 2] } },
+      orderBy: { pageNo: 'asc' },
+      select: { pageNo: true, text: true, charCount: true },
+    });
+    ok(res, {
+      document_id: doc.id,
+      filename: doc.filename,
+      page_count: doc.pageCount,
+      roll_info: meta.roll_info || null,
+      cover_pages: pages.map((p) => ({
+        page_no: p.pageNo,
+        text: p.text,
+        char_count: p.charCount,
+        image_url: `/api/documents/${doc.id}/pages/${p.pageNo}/image`,
+      })),
+    });
+  })
+);
+
+app.post(
+  '/api/data/enrich-roll-meta',
+  asyncHandler(async (_req, res) => {
+    const { enrichAllDocuments } = require(path.resolve(
+      __dirname,
+      '../eluru_voters_data_ocr_extraction/code/saveToDb'
+    ));
+    const result = await enrichAllDocuments();
+    ok(res, result);
   })
 );
 
@@ -438,23 +844,115 @@ app.patch(
     const id = BigInt(req.params.id);
     const existing = await prisma.elector.findUnique({ where: { id } });
     if (!existing) return fail(res, 404, 'Voter not found');
-    const { status, phone, support_lean } = req.body || {};
-    const voter = await prisma.elector.update({
-      where: { id },
-      data: {
-        ...(status ? { status } : {}),
-        ...(phone !== undefined ? { phone } : {}),
-        ...(support_lean ? { supportLean: support_lean } : {}),
-      },
-    });
+    const b = req.body || {};
+    const data = {};
+    if (b.status !== undefined) {
+      if (!VOTER_STATUSES.includes(b.status)) return fail(res, 400, 'Invalid status');
+      data.status = b.status;
+    }
+    if (b.support_lean !== undefined) {
+      if (!VOTER_LEANS.includes(b.support_lean)) return fail(res, 400, 'Invalid support level');
+      data.supportLean = b.support_lean;
+    }
+    if (b.phone !== undefined) {
+      const phone = String(b.phone || '').replace(/[^\d+]/g, '');
+      if (phone && (phone.length < 7 || phone.length > 15)) {
+        return fail(res, 400, 'Enter a valid phone number');
+      }
+      data.phone = phone || null;
+    }
+    if (b.name !== undefined) {
+      const name = String(b.name || '').trim().slice(0, 200);
+      if (!name) return fail(res, 400, 'Name cannot be empty');
+      data.name = name;
+      data.nameNormalized = name.toLowerCase();
+    }
+    if (b.relation_name !== undefined) {
+      data.relationName = String(b.relation_name || '').trim().slice(0, 200) || null;
+    }
+    if (b.relation_type !== undefined) {
+      if (!VOTER_RELATIONS.includes(b.relation_type)) return fail(res, 400, 'Invalid relation');
+      data.relationType = b.relation_type;
+    }
+    if (b.house_no !== undefined) data.houseNo = String(b.house_no || '').trim().slice(0, 40) || null;
+    if (b.epic !== undefined) {
+      const epic = String(b.epic || '').toUpperCase().replace(/[^A-Z0-9/]/g, '');
+      data.epic = epic || null;
+    }
+    if (b.age !== undefined) {
+      if (b.age === null || b.age === '') data.age = null;
+      else {
+        const age = Number(b.age);
+        if (!Number.isInteger(age) || age < 18 || age > 120) {
+          return fail(res, 400, 'Age must be between 18 and 120');
+        }
+        data.age = age;
+      }
+    }
+    if (b.gender !== undefined) {
+      if (!VOTER_GENDERS.includes(b.gender)) return fail(res, 400, 'Invalid gender');
+      data.gender = b.gender;
+    }
+    if (!Object.keys(data).length) return fail(res, 400, 'Nothing to update');
+    const voter = await prisma.elector.update({ where: { id }, data });
     ok(res, voter);
   })
 );
 
+// ---------- Booths ----------
+const BOOTH_STATUSES = ['pending', 'active', 'complete', 'inactive'];
+
+/**
+ * One row per booth with live figures from the voter data. "Reached" counts voters who
+ * have been visited / called back / marked, or who have any contact logged.
+ */
+async function loadBoothSummaries(partNo = null) {
+  const only = partNo != null ? Prisma.sql`WHERE b.part_no = ${partNo}` : Prisma.empty;
+  const rows = await prisma.$queryRaw`
+    WITH e AS (
+      SELECT part_no,
+             COUNT(*)::int AS voters,
+             COUNT(*) FILTER (WHERE gender = 'M'::voterdb.gender_code)::int AS male,
+             COUNT(*) FILTER (WHERE gender = 'F'::voterdb.gender_code)::int AS female,
+             COUNT(DISTINCT house_no) FILTER (WHERE house_no IS NOT NULL AND house_no <> '')::int AS households,
+             COUNT(DISTINCT section_no)::int AS roads,
+             ROUND(AVG(age)::numeric, 1)::float AS avg_age,
+             COUNT(*) FILTER (WHERE epic IS NOT NULL AND epic <> '')::int AS with_epic,
+             COUNT(*) FILTER (
+               WHERE status <> 'active'::voterdb.voter_status
+                  OR EXISTS (SELECT 1 FROM public.outreach o WHERE o.elector_id = voterdb.electors.id)
+             )::int AS reached
+      FROM voterdb.electors
+      GROUP BY part_no
+    )
+    SELECT b.part_no, b.polling_station_name, b.polling_station_address, b.area_name,
+           b.ac_code, b.ac_name, b.agent_name, b.coordinator_name, b.status::text AS status,
+           b.lat, b.lng, b.ward_id, w.ward_no, w.name AS ward_name,
+           COALESCE(e.voters, 0) AS voters,
+           COALESCE(e.male, 0) AS male,
+           COALESCE(e.female, 0) AS female,
+           COALESCE(e.households, 0) AS households,
+           COALESCE(e.roads, 0) AS roads,
+           e.avg_age,
+           COALESCE(e.with_epic, 0) AS with_epic,
+           COALESCE(e.reached, 0) AS reached
+    FROM public.booths b
+    LEFT JOIN e ON e.part_no = b.part_no
+    LEFT JOIN public.wards w ON w.id = b.ward_id
+    ${only}
+    ORDER BY b.part_no`;
+  return rows.map((r) => ({
+    ...r,
+    voter_count: r.voters,
+    unknown: Math.max(0, r.voters - r.male - r.female),
+    coverage_pct: r.voters ? Math.round((1000 * r.reached) / r.voters) / 10 : 0,
+  }));
+}
+
 app.get(
   '/api/booths',
   asyncHandler(async (_req, res) => {
-    ok(res, await prisma.booth.findMany({ orderBy: { partNo: 'asc' } }));
+    ok(res, await loadBoothSummaries());
   })
 );
 
@@ -462,10 +960,34 @@ app.get(
   '/api/booths/:part',
   asyncHandler(async (req, res) => {
     const partNo = Number(req.params.part);
-    const booth = await prisma.booth.findUnique({ where: { partNo } });
+    const [booth] = await loadBoothSummaries(partNo);
     if (!booth) return fail(res, 404, 'Booth not found');
-    const voterCount = await prisma.elector.count({ where: { partNo } });
-    ok(res, { ...booth, voter_count: voterCount });
+
+    const [roads, ageRows, docs] = await Promise.all([
+      prisma.$queryRaw`
+        SELECT section_no, section_name, COUNT(*)::int AS count
+        FROM voterdb.electors WHERE part_no = ${partNo} AND section_no IS NOT NULL
+        GROUP BY 1, 2 ORDER BY section_no`,
+      prisma.$queryRaw`
+        SELECT ${AGE_BAND_CASE} AS band, gender::text AS gender, COUNT(*)::int AS count
+        FROM voterdb.electors WHERE part_no = ${partNo} AND age IS NOT NULL GROUP BY 1, 2`,
+      prisma.$queryRaw`
+        SELECT raw_meta FROM voterdb.extracted_documents WHERE part_no = ${partNo} LIMIT 1`,
+    ]);
+
+    const age_bands = Object.keys(AGE_BANDS).map((band) => {
+      const row = { band, male: 0, female: 0, unknown: 0, total: 0 };
+      for (const r of ageRows) {
+        if (r.band !== band) continue;
+        const g = r.gender === 'M' ? 'male' : r.gender === 'F' ? 'female' : 'unknown';
+        row[g] += r.count;
+        row.total += r.count;
+      }
+      return row;
+    });
+
+    const meta = docs[0]?.raw_meta && typeof docs[0].raw_meta === 'object' ? docs[0].raw_meta : {};
+    ok(res, { ...booth, roads_list: roads, age_bands, roll_info: meta.roll_info || null });
   })
 );
 
@@ -473,305 +995,49 @@ app.patch(
   '/api/booths/:part',
   asyncHandler(async (req, res) => {
     const partNo = Number(req.params.part);
-    const { agent_name, coverage_pct, status, coordinator_name } = req.body || {};
+    const { agent_name, coverage_pct, status, coordinator_name, lat, lng } = req.body || {};
+    const coord = (v, limit) => {
+      if (v === undefined) return undefined;
+      if (v === null || v === '') return null;
+      const n = Number(v);
+      return Number.isFinite(n) && Math.abs(n) <= limit ? n : NaN;
+    };
+    const nextLat = coord(lat, 90);
+    const nextLng = coord(lng, 180);
+    if (Number.isNaN(nextLat) || Number.isNaN(nextLng)) return fail(res, 400, 'Enter a valid latitude and longitude');
+    if (status !== undefined && !BOOTH_STATUSES.includes(status)) return fail(res, 400, 'Invalid status');
+    const clean = (v) => {
+      const t = String(v ?? '').trim().slice(0, 120);
+      return t || null;
+    };
+    const existing = await prisma.booth.findUnique({ where: { partNo } });
+    if (!existing) return fail(res, 404, 'Booth not found');
     const booth = await prisma.booth.update({
       where: { partNo },
       data: {
-        ...(agent_name !== undefined ? { agentName: agent_name } : {}),
+        ...(agent_name !== undefined ? { agentName: clean(agent_name) } : {}),
         ...(coverage_pct !== undefined ? { coveragePct: coverage_pct } : {}),
         ...(status ? { status } : {}),
-        ...(coordinator_name !== undefined ? { coordinatorName: coordinator_name } : {}),
+        ...(coordinator_name !== undefined ? { coordinatorName: clean(coordinator_name) } : {}),
+        ...(nextLat !== undefined ? { lat: nextLat } : {}),
+        ...(nextLng !== undefined ? { lng: nextLng } : {}),
       },
     });
     ok(res, booth);
   })
 );
 
-app.get(
-  '/api/households',
-  asyncHandler(async (req, res) => {
-    const part = req.query.part;
-    const partFilter =
-      part && part !== 'all' ? Prisma.sql`AND part_no = ${Number(part)}` : Prisma.empty;
-    // Skip OCR header junk that was mis-read as voter names
-    const rows = await prisma.$queryRaw`
-      SELECT part_no,
-             house_no,
-             COUNT(*)::int AS member_count,
-             MIN(name) AS head_name
-      FROM voterdb.electors
-      WHERE house_no IS NOT NULL
-        AND house_no <> ''
-        AND name !~* 'part\\s*number|section\\s*no|assembly|constituency|electoral|revision|polling|eluru|s01-?65|e-?roll|draft\\s*roll|photo\\s*available'
-        AND name !~ '^[0-9]{1,3}[-–]'
-        AND length(regexp_replace(name, '[^A-Za-z\\u0C00-\\u0C7F]', '', 'g')) >= 3
-        ${partFilter}
-      GROUP BY part_no, house_no
-      ORDER BY part_no ASC, house_no ASC
-      LIMIT 500
-    `;
-    ok(
-      res,
-      rows.map((r) => ({
-        part_no: r.part_no,
-        house_no: r.house_no,
-        member_count: r.member_count,
-        head_name: r.head_name,
-      }))
-    );
-  })
-);
-
-app.get(
-  '/api/wards',
-  asyncHandler(async (_req, res) => {
-    const wards = await prisma.ward.findMany({
-      orderBy: { wardNo: 'asc' },
-      include: { wardBooths: { select: { partNo: true }, orderBy: { partNo: 'asc' } } },
-    });
-    ok(
-      res,
-      wards.map((w) => ({
-        ...w,
-        parts: w.wardBooths.map((x) => x.partNo),
-      }))
-    );
-  })
-);
-
-app.get(
-  '/api/outreach',
-  asyncHandler(async (req, res) => {
-    const voterId = req.query.voter_id;
-    const rows = await prisma.outreach.findMany({
-      where: voterId ? { electorId: BigInt(voterId) } : undefined,
-      include: { elector: { select: { name: true, partNo: true } } },
-      orderBy: { id: 'desc' },
-      take: voterId ? undefined : 100,
-    });
-    ok(
-      res,
-      rows.map((o) => ({
-        ...o,
-        type: OUTREACH_TYPE_OUT[o.type] || o.type,
-        voter_name: o.elector?.name,
-        part_no: o.elector?.partNo,
-        voter_id: o.electorId,
-      }))
-    );
-  })
-);
-
-const OUTREACH_TYPE_IN = {
-  visit: 'door',
-  door: 'door',
-  call: 'phone',
-  phone: 'phone',
-  whatsapp: 'whatsapp',
-  sms: 'sms',
-  event: 'event',
-  other: 'other',
-};
-const OUTREACH_TYPE_OUT = {
-  door: 'Visit',
-  phone: 'Call',
-  whatsapp: 'WhatsApp',
-  sms: 'SMS',
-  event: 'Event',
-  other: 'Other',
-};
-
-app.post(
-  '/api/outreach',
-  asyncHandler(async (req, res) => {
-    const { voter_id, type, outcome, notes, created_by_role } = req.body || {};
-    if (!voter_id || !type) return fail(res, 400, 'voter_id and type required');
-    const mapped = OUTREACH_TYPE_IN[String(type).toLowerCase()];
-    if (!mapped) return fail(res, 400, 'Invalid type');
-    const row = await prisma.outreach.create({
-      data: {
-        electorId: BigInt(voter_id),
-        type: mapped,
-        outcome: outcome || null,
-        notes: notes || null,
-        createdByRole: created_by_role || null,
-      },
-    });
-    ok(res, { ...row, type: OUTREACH_TYPE_OUT[row.type] || row.type });
-  })
-);
-
-app.get(
-  '/api/issues',
-  asyncHandler(async (_req, res) => {
-    ok(res, await prisma.issue.findMany({ orderBy: { id: 'desc' } }));
-  })
-);
-
-app.post(
-  '/api/issues',
-  asyncHandler(async (req, res) => {
-    const { title, description, ward_id, part_no, priority, reporter_role } = req.body || {};
-    if (!title) return fail(res, 400, 'title required');
-    const row = await prisma.issue.create({
-      data: {
-        title,
-        description: description || null,
-        wardId: ward_id ? BigInt(ward_id) : null,
-        partNo: part_no ? Number(part_no) : null,
-        priority: priority || 'Medium',
-        reporterRole: reporter_role || null,
-      },
-    });
-    ok(res, row);
-  })
-);
-
-app.patch(
-  '/api/issues/:id',
-  asyncHandler(async (req, res) => {
-    const { status, priority } = req.body || {};
-    const data = {};
-    if (status) data.status = status === 'In progress' ? 'In_progress' : status;
-    if (priority) data.priority = priority;
-    const row = await prisma.issue.update({
-      where: { id: BigInt(req.params.id) },
-      data,
-    });
-    ok(res, row);
-  })
-);
-
-app.get(
-  '/api/surveys',
-  asyncHandler(async (_req, res) => {
-    const surveys = await prisma.survey.findMany({
-      orderBy: { id: 'desc' },
-      include: { responses: { orderBy: { id: 'desc' } } },
-    });
-    ok(res, surveys);
-  })
-);
-
-app.post(
-  '/api/surveys/:id/responses',
-  asyncHandler(async (req, res) => {
-    const { answer, part_no, respondent_name, created_by_role } = req.body || {};
-    if (!answer) return fail(res, 400, 'answer required');
-    const row = await prisma.surveyResponse.create({
-      data: {
-        surveyId: BigInt(req.params.id),
-        partNo: part_no ? Number(part_no) : null,
-        answer,
-        respondentName: respondent_name || null,
-        createdByRole: created_by_role || null,
-      },
-    });
-    ok(res, row);
-  })
-);
-
-app.get(
-  '/api/election-day',
-  asyncHandler(async (_req, res) => {
-    const rows = await prisma.electionDayStats.findMany({
-      orderBy: { partNo: 'asc' },
-      include: {
-        booth: { select: { areaName: true, agentName: true, voterCount: true } },
-      },
-    });
-    ok(
-      res,
-      rows.map((e) => ({
-        ...e,
-        area_name: e.booth?.areaName,
-        agent_name: e.booth?.agentName,
-        voter_count: e.booth?.voterCount,
-      }))
-    );
-  })
-);
-
-app.patch(
-  '/api/election-day/:part',
-  asyncHandler(async (req, res) => {
-    const partNo = Number(req.params.part);
-    const { slip_printed, voted_count, missing_count, turnout_pct } = req.body || {};
-    const row = await prisma.electionDayStats.upsert({
-      where: { partNo },
-      create: {
-        partNo,
-        slipPrinted: slip_printed ?? 0,
-        votedCount: voted_count ?? 0,
-        missingCount: missing_count ?? 0,
-        turnoutPct: turnout_pct ?? 0,
-      },
-      update: {
-        ...(slip_printed !== undefined ? { slipPrinted: slip_printed } : {}),
-        ...(voted_count !== undefined ? { votedCount: voted_count } : {}),
-        ...(missing_count !== undefined ? { missingCount: missing_count } : {}),
-        ...(turnout_pct !== undefined ? { turnoutPct: turnout_pct } : {}),
-      },
-    });
-    ok(res, row);
-  })
-);
-
-app.get(
-  '/api/map/booths',
-  asyncHandler(async (_req, res) => {
-    ok(
-      res,
-      await prisma.booth.findMany({
-        orderBy: { partNo: 'asc' },
-        select: {
-          partNo: true,
-          areaName: true,
-          coveragePct: true,
-          status: true,
-          voterCount: true,
-          lat: true,
-          lng: true,
-          agentName: true,
-        },
-      })
-    );
-  })
-);
-
-app.get(
-  '/api/team',
-  asyncHandler(async (_req, res) => {
-    const rows = await prisma.teamMember.findMany({ orderBy: { id: 'asc' } });
-    ok(
-      res,
-      rows.map((r) => ({
-        ...r,
-        assigned_parts: r.assignedParts,
-        assigned_parts_json: JSON.stringify(r.assignedParts || []),
-      }))
-    );
-  })
-);
-
-app.post(
-  '/api/team',
-  asyncHandler(async (req, res) => {
-    const { name, role, zone, assigned_parts, status, phone } = req.body || {};
-    if (!name || !role) return fail(res, 400, 'name and role required');
-    const row = await prisma.teamMember.create({
-      data: {
-        name,
-        role,
-        zone: zone || null,
-        assignedParts: Array.isArray(assigned_parts) ? assigned_parts.map(Number) : [],
-        status: status || 'Active',
-        phone: phone || null,
-      },
-    });
-    ok(res, row);
-  })
-);
+// ---------- Page routes (one module per page) ----------
+require('./routes')({
+  app,
+  prisma,
+  Prisma,
+  ok,
+  fail,
+  asyncHandler,
+  loadBoothSummaries,
+  houseFields,
+});
 
 app.get(
   '/api/settings',

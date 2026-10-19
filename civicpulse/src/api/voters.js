@@ -11,3 +11,21 @@ export function getVoter(id) {
 export function updateVoter(id, payload) {
   return client.patch(`/voters/${id}`, payload).then(unwrap);
 }
+
+export function getVoterStats(params = {}) {
+  return client.get('/voters/stats', { params }).then(unwrap);
+}
+
+/** Download the voters matching the current filters as a spreadsheet file. */
+export function downloadVoters(params = {}) {
+  return client.get('/voters/export', { params, timeout: 120000 }).then(unwrap).then((data) => {
+    const blob = new Blob(['\ufeff', data.csv || ''], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `eluru-voters-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    return data;
+  });
+}

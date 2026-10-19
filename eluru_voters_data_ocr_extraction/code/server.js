@@ -161,8 +161,8 @@ app.get('/api/disk', (_req, res) => {
   });
 });
 
-app.post('/api/recover', (_req, res) => {
-  const jobs = queue.recoverPendingFromDisk();
+app.post('/api/recover', async (_req, res) => {
+  const jobs = await queue.recoverPendingFromDisk();
   res.json({
     success: true,
     recovered: jobs.length,
@@ -230,10 +230,14 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`Extracted: ${EXTRACTED}`);
   console.log(`DATABASE_URL: ${process.env.DATABASE_URL ? 'set' : 'NOT SET — DB save skipped'}`);
   // Defer so HTTP answers before OCR starts (sync spawn work can stall the event loop).
-  setTimeout(() => {
-    const recovered = queue.recoverPendingFromDisk();
-    if (recovered.length) {
-      console.log(`Recovered ${recovered.length} PDF(s) from disk into OCR queue`);
+  setTimeout(async () => {
+    try {
+      const recovered = await queue.recoverPendingFromDisk();
+      if (recovered.length) {
+        console.log(`Recovered ${recovered.length} PDF(s) from disk into OCR queue`);
+      }
+    } catch (err) {
+      console.warn('Recover on start failed:', err.message);
     }
   }, 500);
 });

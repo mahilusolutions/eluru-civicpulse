@@ -1,88 +1,49 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Download, RefreshCw } from 'lucide-react';
-import {
-  getRollFiles,
-  importVotersJson,
-  retryRollFile,
-  uploadRollPdf,
-} from '../api/data';
+import { Download, Eye, RefreshCw } from 'lucide-react';
+import { getRollFiles, importVotersJson, retryRollFile, uploadRollPdf } from '../api/data';
 import AlertBanner from '../components/ui/AlertBanner';
-import DataTable from '../components/ui/DataTable';
+import ConfirmButton from '../components/ui/ConfirmButton';
+import DataList, { CardShell } from '../components/ui/DataList';
 import FileDropzone from '../components/ui/FileDropzone';
-import FilterBar, { FilterSearch, FilterSelect } from '../components/ui/FilterBar';
+import { FilterSelect } from '../components/ui/FilterBar';
+import Modal from '../components/ui/Modal';
 import PageHeader from '../components/ui/PageHeader';
-import Panel, { btnGhost, inputClass } from '../components/ui/Panel';
-import StatusBadge, { labelForStatus, toneForStatus } from '../components/ui/StatusBadge';
+import { DetailRow, FilterField, FilterPanel, MiniFact, Pill, StatStrip, btnTool, inputSm, useViewMode, ViewSwitch } from '../components/ui/kit';
 import { useApi } from '../hooks/useApi';
-import { usePagination } from '../hooks/usePagination';
+import { fmt } from '../utils/voterFormat';
 
-function fmtChars(n) {
-  if (n == null) return '—';
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
-  return String(n);
+const STATUS = {
+  queued: { label: 'Waiting', color: 'var(--viz-neutral)' },
+  ocr: { label: 'Reading', color: 'var(--viz-active)' },
+  ready: { label: 'Ready', color: 'var(--viz-good)' },
+  needs_import: { label: 'Needs spreadsheet', color: 'var(--viz-warn)' },
+  failed: { label: 'Failed', color: 'var(--viz-crit)' },
+};
+const statusOf = (s) => STATUS[String(s || '').toLowerCase()] || { label: String(s || '—'), color: 'var(--viz-unknown)' };
+const RUNNING = ['queued', 'ocr', 'pending', 'processing'];
+
+function stageLabel(stage) {
+  const s = String(stage || '').toLowerCase();
+  if (s === 'render') return 'Preparing';
+  if (s === 'ocr' || s === 'reading') return 'Reading';
+  if (s === 'done') return 'Done';
+  return 'Waiting';
 }
 
-function fmtEta(sec) {
+function etaLabel(sec) {
   if (sec == null || Number.isNaN(sec)) return null;
   if (sec <= 0) return 'almost done';
   if (sec < 60) return `about ${sec}s left`;
   return `about ${Math.ceil(sec / 60)} min left`;
 }
 
-function stageLabel(stage) {
-  const s = String(stage || '').toLowerCase();
-  if (s === 'render') return 'Preparing';
-  if (s === 'ocr' || s === 'reading') return 'Reading';
-  if (s === 'queued') return 'Waiting';
-  if (s === 'done') return 'Done';
-  return stage ? String(stage) : 'Waiting';
-}
+/** Header names in a spreadsheet can be written many ways: "Voter ID", "voter_id", "EPIC"… */
+const norm = (h) => String(h).trim().toLowerCase().replace(/^"|"$/g, '').replace(/[\s-]+/g, '_');
 
-function ProgressCell({ row }) {
-  const done = Number(row.page_done) || 0;
-  const total = Number(row.page_count) || 0;
-  const running = ['queued', 'ocr'].includes(String(row.parse_status || '').toLowerCase());
-
-  if (row.parse_status === 'ready' || row.parse_status === 'needs_import') {
-    return (
-      <div className="tabular-nums">
-        <span className="font-semibold text-[var(--ink)]">{total || '—'}</span>
-        <span className="text-[var(--muted)]"> pages</span>
-      </div>
-    );
-  }
-
-  if (!running) {
-    return <span className="tabular-nums text-[var(--muted)]">{total || '—'}</span>;
-  }
-
-  const pct = total > 0 ? Math.min(100, Math.round((100 * done) / total)) : done > 0 ? 5 : 2;
-  return (
-    <div className="min-w-[7rem]">
-      <div className="mb-1 flex justify-between gap-2 text-[11px] tabular-nums">
-        <span className="font-semibold text-[var(--ink)]">
-          {total > 0 ? `${done}/${total}` : done > 0 ? `${done}…` : 'starting'}
-        </span>
-        <span className="text-[var(--muted)]">{stageLabel(row.ocr_stage)}</span>
-      </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-[var(--bg-muted)]">
-        <div
-          className="h-full rounded-full bg-[var(--brand)] transition-all duration-500"
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      {fmtEta(row.ocr_eta_seconds) ? (
-        <p className="mt-0.5 text-[10px] text-[var(--muted)]">{fmtEta(row.ocr_eta_seconds)}</p>
-      ) : null}
-    </div>
-  );
-}
-
-function parseCsv(text) {
-  const lines = text.trim().split(/\r?\n/);
+function parseSpreadsheet(text) {
+  const lines = text.replace(/^﻿/, '').trim().split(/\r?\n/);
   if (lines.length < 2) return [];
-  const headers = lines[0].split(',').map((h) => h.trim().toLowerCase().replace(/^"|"$/g, ''));
+  const headers = lines[0].split(',').map(norm);
   return lines.slice(1).map((line) => {
     const cols = line.match(/(".*?"|[^,]+)/g) || [];
     const row = {};
@@ -90,83 +51,116 @@ function parseCsv(text) {
       row[h] = (cols[i] || '').replace(/^"|"$/g, '').trim();
     });
     return {
-      epic: row.epic || null,
-      name: row.name || row.elector_name || 'Unknown',
+      epic: row.epic || row.voter_id || row.voterid || null,
+      name: row.name || row.elector_name || row.voter_name || 'Unknown',
       age: row.age ? Number(row.age) : null,
       gender: row.gender || row.sex || null,
-      house_no: row.house_no || row.house || null,
-      serial_no: row.serial_no || row.slno ? Number(row.serial_no || row.slno) : null,
+      house_no: row.house_no || row.house || row.house_number || null,
+      serial_no: row.serial_no || row.slno || row.serial ? Number(row.serial_no || row.slno || row.serial) : null,
       status: row.status || 'active',
     };
   });
 }
 
+function Progress({ row }) {
+  const done = Number(row.page_done) || 0;
+  const total = Number(row.page_count) || 0;
+  const state = String(row.parse_status || '').toLowerCase();
+  if (state === 'ready' || state === 'needs_import') {
+    return (
+      <span className="whitespace-nowrap tabular-nums">
+        <span className="font-semibold text-[var(--ink)]">{total || '—'}</span> <span className="text-[var(--muted)]">pages</span>
+      </span>
+    );
+  }
+  if (!RUNNING.includes(state)) return <span className="text-[var(--muted)]">—</span>;
+  const pct = total > 0 ? Math.min(100, Math.round((100 * done) / total)) : done > 0 ? 5 : 2;
+  return (
+    <div className="min-w-[8rem]">
+      <div className="mb-1 flex justify-between gap-2 text-[11px] tabular-nums">
+        <span className="font-semibold text-[var(--ink)]">{total > 0 ? `${done}/${total}` : done > 0 ? `${done}…` : 'starting'}</span>
+        <span className="text-[var(--muted)]">{stageLabel(row.ocr_stage)}</span>
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-[var(--viz-track)]">
+        <div className="h-full rounded-full bg-[var(--brand)] transition-all duration-500" style={{ width: `${pct}%` }} />
+      </div>
+      {etaLabel(row.ocr_eta_seconds) ? <p className="mt-0.5 text-[10px] text-[var(--muted)]">{etaLabel(row.ocr_eta_seconds)}</p> : null}
+    </div>
+  );
+}
+
+function FileModal({ file, onClose }) {
+  const state = statusOf(file.parse_status);
+  return (
+    <Modal title={`Booth ${file.part_no ?? '—'} · voter list`} subtitle={<Pill color={state.color}>{state.label}</Pill>} badge={file.part_no ?? '—'} size="md" onClose={onClose}>
+      {file.error_message ? <AlertBanner tone="danger" className="mb-3">{file.error_message}</AlertBanner> : null}
+      <dl>
+        <DetailRow label="Pages">{file.page_count ? String(file.page_count) : null}</DetailRow>
+        <DetailRow label="Voters read">{file.voter_count != null ? fmt(file.voter_count) : null}</DetailRow>
+        <DetailRow label="Time taken">{file.duration_ms != null ? `${Math.round(file.duration_ms / 1000)} seconds` : etaLabel(file.ocr_eta_seconds)}</DetailRow>
+        <DetailRow label="Saved">{file.extracted_at ? new Date(file.extracted_at).toLocaleString() : 'Not yet'}</DetailRow>
+        <DetailRow label="File name">{file.filename}</DetailRow>
+      </dl>
+    </Modal>
+  );
+}
+
 export default function DataPage() {
+  const { data: files, loading, error, reload } = useApi(getRollFiles, []);
+  const list = useMemo(() => files || [], [files]);
+
   const [uploading, setUploading] = useState(false);
   const [importPart, setImportPart] = useState('');
   const [message, setMessage] = useState('');
   const [busyId, setBusyId] = useState(null);
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [view, setView] = useViewMode('civicpulse_data_view');
+  const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const [selected, setSelected] = useState(null);
 
-  const { data: files, loading, error, reload } = useApi(getRollFiles, []);
+  const inFlight = list.some((f) => RUNNING.includes(String(f.parse_status || '').toLowerCase()));
 
-  const inFlight = useMemo(
-    () =>
-      (files || []).some((f) =>
-        ['queued', 'ocr', 'pending', 'processing'].includes(String(f.parse_status || '').toLowerCase())
-      ),
-    [files]
-  );
-
-  // Quiet background update — numbers change, page does not flash/reload
+  // Quiet background update while a file is being read: numbers change, the page does not flash.
   useEffect(() => {
     if (!inFlight) return undefined;
     const t = setInterval(() => reload({ silent: true }), 3000);
     return () => clearInterval(t);
   }, [inFlight, reload]);
 
-  useEffect(() => {
-    if (!selected || !files) return;
-    const fresh = files.find((f) => String(f.id) === String(selected.id));
-    if (fresh) setSelected(fresh);
-  }, [files, selected?.id]);
+  useEffect(() => setPage(1), [query, statusFilter, pageSize]);
 
-  const stats = useMemo(() => {
-    const list = files || [];
-    return {
+  const stats = useMemo(
+    () => ({
       total: list.length,
       reading: list.filter((f) => ['queued', 'ocr'].includes(f.parse_status)).length,
       waiting: list.filter((f) => f.parse_status === 'needs_import').length,
       ready: list.filter((f) => f.parse_status === 'ready').length,
       voters: list.reduce((s, f) => s + (f.voter_count || 0), 0),
-    };
-  }, [files]);
+    }),
+    [list]
+  );
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return (files || []).filter((f) => {
-      const matchQ =
-        !q ||
-        (f.filename || '').toLowerCase().includes(q) ||
-        String(f.part_no || '').includes(q);
-      return matchQ && (statusFilter === 'all' || f.parse_status === statusFilter);
-    });
-  }, [files, query, statusFilter]);
+    return list.filter((f) => (!q || (f.filename || '').toLowerCase().includes(q) || String(f.part_no || '') === q) && (statusFilter === 'all' || f.parse_status === statusFilter));
+  }, [list, query, statusFilter]);
 
-  const pager = usePagination(filtered, pageSize);
+  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const safePage = Math.min(page, pageCount);
+  const rows = filtered.slice((safePage - 1) * pageSize, safePage * pageSize);
+  const paging = { page: safePage, pageCount, from: filtered.length ? (safePage - 1) * pageSize + 1 : 0, to: Math.min(safePage * pageSize, filtered.length), total: filtered.length, pageSize, onPageChange: setPage, onPageSizeChange: setPageSize };
 
   const onUploadPdf = useCallback(
-    async (list) => {
-      const file = list?.[0];
+    async (picked) => {
+      const file = picked?.[0];
       if (!file) return;
       setUploading(true);
       setMessage('');
       try {
         const result = await uploadRollPdf(file);
-        setMessage(`Part ${result.part_no ?? '?'} uploaded. Reading will start shortly.`);
+        setMessage(`Booth ${result.part_no ?? '?'} uploaded. Reading will start shortly.`);
         setTimeout(() => reload({ silent: true }), 800);
       } catch (err) {
         setMessage(err.message);
@@ -177,21 +171,21 @@ export default function DataPage() {
     [reload]
   );
 
-  const onImportCsv = useCallback(
-    async (list) => {
-      const file = list?.[0];
+  const onImportSheet = useCallback(
+    async (picked) => {
+      const file = picked?.[0];
       if (!file) return;
       if (!importPart) {
-        setMessage('Enter a part number first.');
+        setMessage('Enter the booth number first.');
         return;
       }
       setUploading(true);
       setMessage('');
       try {
-        const voters = parseCsv(await file.text()).filter((v) => v.name !== 'Unknown');
-        if (!voters.length) throw new Error('No valid rows in this CSV');
+        const voters = parseSpreadsheet(await file.text()).filter((v) => v.name !== 'Unknown');
+        if (!voters.length) throw new Error('No voters found in this spreadsheet');
         const result = await importVotersJson(Number(importPart), voters);
-        setMessage(`${result.imported} voters added for part ${result.part_no}.`);
+        setMessage(`${fmt(result.imported)} voters added to booth ${result.part_no}.`);
         reload({ silent: true });
       } catch (err) {
         setMessage(err.message);
@@ -218,302 +212,153 @@ export default function DataPage() {
     [reload]
   );
 
+  /** Finished files ask first: reading again replaces the voters of that booth. */
+  const retryControl = (f) =>
+    f.parse_status === 'ready' ? (
+      <ConfirmButton label="Read again" confirmLabel="Yes, replace voters" onConfirm={() => onRetry(f.id)} disabled={busyId === f.id} />
+    ) : RUNNING.includes(String(f.parse_status)) ? null : (
+      <button type="button" disabled={busyId === f.id} onClick={() => onRetry(f.id)} className="rounded-xl px-3 py-2 text-xs font-semibold text-[var(--ink-soft)] transition hover:text-[var(--brand)] disabled:opacity-50">
+        Retry
+      </button>
+    );
+
   const columns = useMemo(
     () => [
-      {
-        key: 'part_no',
-        header: 'Part',
-        accessor: 'part_no',
-        className: 'font-bold tabular-nums',
-        width: '3.5rem',
-        truncate: false,
-      },
-      {
-        key: 'file',
-        header: 'File',
-        truncate: false,
-        cell: (r) => (
-          <button
-            type="button"
-            className="min-w-0 max-w-[22rem] text-left"
-            title={r.filename}
-            onClick={(e) => {
-              e.stopPropagation();
-              setSelected(r);
-            }}
-          >
-            <p className="break-all text-[12px] font-semibold leading-snug text-[var(--ink)] hover:underline">
-              {r.filename}
-            </p>
-          </button>
-        ),
-      },
+      { key: 'part_no', header: 'Booth', accessor: 'part_no', align: 'center', className: 'font-bold tabular-nums', width: '4.5rem', sticky: 'left', stickyOffset: 0 },
+      { key: 'file', header: 'File', truncate: false, cell: (f) => <span className="inline-block max-w-[24rem] truncate align-middle font-semibold text-[var(--ink)]" title={f.filename}>{f.filename}</span> },
       {
         key: 'status',
         header: 'Status',
         truncate: false,
-        cell: (r) => (
+        cell: (f) => (
           <div className="space-y-1">
-            <StatusBadge tone={toneForStatus(r.parse_status)}>
-              {labelForStatus(r.parse_status)}
-            </StatusBadge>
-            {r.error_message ? (
-              <p className="max-w-[10rem] text-[10px] text-red-600" title={r.error_message}>
-                {r.error_message}
-              </p>
-            ) : null}
+            <Pill color={statusOf(f.parse_status).color}>{statusOf(f.parse_status).label}</Pill>
+            {f.error_message ? <p className="max-w-[12rem] truncate text-[10px] text-[var(--danger)]" title={f.error_message}>{f.error_message}</p> : null}
           </div>
         ),
+        width: '9.5rem',
       },
-      {
-        key: 'progress',
-        header: 'Progress',
-        truncate: false,
-        cell: (r) => <ProgressCell row={r} />,
-      },
-      {
-        key: 'chars',
-        header: 'Text',
-        accessor: (r) => fmtChars(r.text_length),
-        align: 'right',
-        className: 'tabular-nums',
-        width: '4.5rem',
-        truncate: false,
-      },
-      {
-        key: 'voters',
-        header: 'Voters',
-        accessor: (r) => r.voter_count ?? 0,
-        align: 'right',
-        className: 'tabular-nums font-semibold',
-        width: '5rem',
-        truncate: false,
-      },
+      { key: 'progress', header: 'Progress', truncate: false, cell: (f) => <Progress row={f} />, width: '9rem' },
+      { key: 'voters', header: 'Voters', accessor: (f) => fmt(f.voter_count ?? 0), align: 'right', className: 'tabular-nums font-semibold', width: '5rem' },
       {
         key: 'actions',
-        header: '',
+        header: 'Details',
+        align: 'center',
         truncate: false,
-        align: 'right',
-        cell: (file) => (
-          <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              className="rounded-md border border-[var(--line)] px-2 py-1 text-[11px] font-semibold text-[var(--ink)]"
-              onClick={(e) => {
-                e.stopPropagation();
-                setSelected(file);
-              }}
-            >
-              Details
+        sticky: 'right',
+        width: '12rem',
+        cell: (f) => (
+          <div className="flex items-center justify-end gap-1">
+            <button type="button" onClick={() => setSelected(f)} className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--line)] bg-[var(--bg-elevated)] px-2.5 py-1.5 text-xs font-semibold text-[var(--brand)] transition hover:border-[var(--brand)]">
+              <Eye className="h-3.5 w-3.5" />
+              View
             </button>
-            {file.parse_status === 'needs_import' && file.part_no ? (
-              <button
-                type="button"
-                className="rounded-md bg-[var(--brand)] px-2 py-1 text-[11px] font-semibold text-white"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setImportPart(String(file.part_no));
-                  setMessage(`Part ${file.part_no} ready for CSV.`);
-                }}
-              >
-                CSV
+            {f.parse_status === 'needs_import' && f.part_no ? (
+              <button type="button" onClick={() => { setImportPart(String(f.part_no)); setMessage(`Booth ${f.part_no} is ready for a spreadsheet. Drop it in the box above.`); }} className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-[var(--brand)] hover:underline">
+                Add voters
               </button>
-            ) : null}
-            <button
-              type="button"
-              disabled={busyId === file.id}
-              className="rounded-md border border-[var(--line)] px-2 py-1 text-[11px] font-semibold text-[var(--muted)] disabled:opacity-50"
-              onClick={(e) => {
-                e.stopPropagation();
-                onRetry(file.id);
-              }}
-            >
-              Retry
-            </button>
+            ) : (
+              retryControl(f)
+            )}
           </div>
         ),
       },
     ],
-    [busyId, onRetry]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [busyId]
   );
 
+  const renderCard = (f) => (
+    <CardShell>
+      <div className="flex items-start gap-3">
+        <span className="inline-flex h-10 min-w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--brand)] px-2 text-sm font-extrabold text-white">{f.part_no ?? '—'}</span>
+        <div className="min-w-0 flex-1">
+          <p className="break-all text-sm font-bold leading-snug text-[var(--ink)]">{f.filename}</p>
+          <div className="mt-1.5">
+            <Pill color={statusOf(f.parse_status).color}>{statusOf(f.parse_status).label}</Pill>
+          </div>
+        </div>
+        <button type="button" onClick={() => setSelected(f)} className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--line)] px-2.5 py-1.5 text-xs font-semibold text-[var(--brand)]">
+          <Eye className="h-3.5 w-3.5" />
+          View
+        </button>
+      </div>
+      <dl className="mt-3 grid grid-cols-2 gap-3 border-t border-[var(--line)] pt-3">
+        <MiniFact label="Progress"><Progress row={f} /></MiniFact>
+        <MiniFact label="Voters">{fmt(f.voter_count ?? 0)}</MiniFact>
+      </dl>
+      {f.error_message ? <p className="mt-2 text-xs text-[var(--danger)]">{f.error_message}</p> : null}
+      <div className="mt-2 flex justify-end">{f.parse_status === 'needs_import' ? null : retryControl(f)}</div>
+    </CardShell>
+  );
+
+  const chips = [
+    query && { key: 'q', label: `“${query}”`, onRemove: () => setQuery('') },
+    statusFilter !== 'all' && { key: 's', label: statusOf(statusFilter).label, onRemove: () => setStatusFilter('all') },
+  ].filter(Boolean);
+
   return (
-    <section className="space-y-4">
+    <section className="w-full space-y-3">
       <PageHeader
-        eyebrow="Import"
-        title="Data"
-        description="Upload voter roll PDFs. Progress updates quietly while each file is read."
+        description="Upload each booth's voter list PDF. Progress updates quietly while a file is being read."
         actions={
           <>
-            <a href="/templates/voters-import-template.csv" download className={btnGhost}>
-              <Download className="mr-1.5 h-3.5 w-3.5" />
-              Template
+            <ViewSwitch view={view} onChange={setView} />
+            <a href="/templates/voters-import-template.csv" download className={btnTool}>
+              <Download className="h-3.5 w-3.5" />
+              Spreadsheet template
             </a>
-            <button type="button" onClick={() => reload()} className={btnGhost}>
-              <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+            <button type="button" onClick={() => reload()} className={btnTool}>
+              <RefreshCw className="h-3.5 w-3.5" />
               Refresh
             </button>
           </>
         }
       />
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-        {[
-          ['Files', stats.total],
-          ['Reading', stats.reading],
-          ['Needs CSV', stats.waiting],
-          ['Ready', stats.ready],
-          ['Voters', stats.voters],
-        ].map(([label, value]) => (
-          <Panel key={label} className="px-4 py-3.5">
-            <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-[var(--muted)]">
-              {label}
-            </p>
-            <p className="mt-1.5 text-2xl font-extrabold tabular-nums text-[var(--ink)]">{value}</p>
-          </Panel>
-        ))}
-      </div>
+      <StatStrip
+        items={[
+          { label: 'Files', value: fmt(stats.total), hint: 'voter lists uploaded' },
+          { label: 'Being read', value: fmt(stats.reading), hint: stats.reading ? 'updating every few seconds' : 'nothing in progress' },
+          { label: 'Needs spreadsheet', value: fmt(stats.waiting), hint: 'could not be read fully' },
+          { label: 'Ready', value: fmt(stats.ready), hint: 'ready to use' },
+          { label: 'Voters', value: fmt(stats.voters), hint: 'across all files' },
+        ]}
+      />
 
       <div className="grid gap-3 lg:grid-cols-2">
-        <FileDropzone
-          accept="application/pdf,.pdf"
-          busy={uploading}
-          onFiles={onUploadPdf}
-          title="Drop PDF here"
-          hint="We read the pages and fill voter details"
-        />
-        <Panel className="p-4">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <p className="text-sm font-semibold text-[var(--ink)]">CSV import</p>
-            <input
-              type="number"
-              min={1}
-              max={247}
-              value={importPart}
-              onChange={(e) => setImportPart(e.target.value)}
-              placeholder="Part #"
-              className={`${inputClass} !w-24`}
-            />
+        <FileDropzone accept="application/pdf,.pdf" busy={uploading} onFiles={onUploadPdf} title="Drop a voter list PDF here" hint="We read every page and fill in the voter details" />
+        <div className="space-y-2 rounded-2xl border border-[var(--line)] bg-[var(--bg-elevated)] p-3 shadow-soft">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm font-bold text-[var(--ink)]">Add voters from a spreadsheet</p>
+            <input type="number" min={1} max={247} value={importPart} onChange={(e) => setImportPart(e.target.value)} placeholder="Booth no." aria-label="Booth number" className={`${inputSm} !w-28`} />
           </div>
-          <FileDropzone
-            accept=".csv,text/csv"
-            icon="csv"
-            busy={uploading}
-            onFiles={onImportCsv}
-            title={importPart ? `CSV for part ${importPart}` : 'Set part, then drop CSV'}
-            hint="epic, name, age, gender, house_no"
-          />
-        </Panel>
+          <FileDropzone accept=".csv,text/csv" icon="csv" busy={uploading} onFiles={onImportSheet} title={importPart ? `Spreadsheet for booth ${importPart}` : 'Enter the booth number, then drop the spreadsheet'} hint="Columns: voter ID, name, age, gender, house number" />
+        </div>
       </div>
 
       <AlertBanner tone="info">{message}</AlertBanner>
       <AlertBanner tone="danger">{error}</AlertBanner>
 
-      <div className="grid gap-3 lg:grid-cols-[1fr_minmax(16rem,20rem)]">
-        <div className="min-w-0 space-y-3">
-          <FilterBar>
-            <FilterSearch value={query} onChange={setQuery} placeholder="Find part or file…" />
-            <FilterSelect
-              label="Status"
-              value={statusFilter}
-              onChange={setStatusFilter}
-              options={[
-                { value: 'all', label: 'All' },
-                { value: 'queued', label: 'Waiting' },
-                { value: 'ocr', label: 'Reading' },
-                { value: 'needs_import', label: 'Needs CSV' },
-                { value: 'ready', label: 'Ready' },
-                { value: 'failed', label: 'Failed' },
-              ]}
-            />
-          </FilterBar>
+      <FilterPanel search={query} onSearch={setQuery} placeholder="Search booth number or file name…" chips={chips} onClearAll={() => { setQuery(''); setStatusFilter('all'); }} cols="md:grid-cols-4">
+        <FilterField label="Status" className="col-span-2 md:col-span-1">
+          <FilterSelect label="Status" className="w-full" value={statusFilter} onChange={setStatusFilter} options={[{ value: 'all', label: 'All files' }, ...Object.entries(STATUS).map(([value, s]) => ({ value, label: s.label }))]} />
+        </FilterField>
+      </FilterPanel>
 
-          <DataTable
-            columns={columns}
-            rows={pager.rows}
-            rowKey="id"
-            loading={loading && !files}
-            emptyTitle="No files yet"
-            emptyDescription="Drop a voter roll PDF above to get started."
-            pagination={{
-              page: pager.page,
-              pageCount: pager.pageCount,
-              from: pager.from,
-              to: pager.to,
-              total: pager.total,
-              pageSize,
-              onPageSizeChange: setPageSize,
-              onPageChange: pager.setPage,
-            }}
-          />
-        </div>
+      <DataList
+        view={view}
+        columns={columns}
+        rows={rows}
+        rowKey="id"
+        renderCard={renderCard}
+        loading={loading && !files}
+        pagination={paging}
+        emptyTitle={chips.length ? 'No files match these filters' : 'No voter lists yet'}
+        emptyDescription={chips.length ? 'Try removing a filter.' : 'Drop a voter list PDF above to get started.'}
+      />
 
-        <Panel className="h-fit p-4">
-          <p className="text-sm font-semibold text-[var(--ink)]">File details</p>
-          {!selected ? (
-            <p className="mt-2 text-sm text-[var(--muted)]">Select a file to see more details.</p>
-          ) : (
-            <dl className="mt-3 space-y-2 text-sm">
-              <div>
-                <dt className="text-[11px] uppercase tracking-wide text-[var(--muted)]">Part</dt>
-                <dd className="font-semibold tabular-nums">{selected.part_no ?? '—'}</dd>
-              </div>
-              <div>
-                <dt className="text-[11px] uppercase tracking-wide text-[var(--muted)]">Status</dt>
-                <dd>
-                  <StatusBadge tone={toneForStatus(selected.parse_status)}>
-                    {labelForStatus(selected.parse_status)}
-                  </StatusBadge>
-                </dd>
-              </div>
-              <div>
-                <dt className="text-[11px] uppercase tracking-wide text-[var(--muted)]">Pages</dt>
-                <dd className="tabular-nums">
-                  {selected.page_done != null && selected.parse_status === 'ocr'
-                    ? `${selected.page_done} of ${selected.page_count || '?'}`
-                    : selected.page_count || '—'}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-[11px] uppercase tracking-wide text-[var(--muted)]">Text read</dt>
-                <dd className="tabular-nums font-semibold">
-                  {selected.text_length != null ? selected.text_length.toLocaleString() : '—'}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-[11px] uppercase tracking-wide text-[var(--muted)]">Voters</dt>
-                <dd className="tabular-nums font-semibold">{selected.voter_count ?? 0}</dd>
-              </div>
-              <div>
-                <dt className="text-[11px] uppercase tracking-wide text-[var(--muted)]">Time</dt>
-                <dd className="tabular-nums">
-                  {selected.duration_ms != null
-                    ? `${Math.round(selected.duration_ms / 1000)}s`
-                    : fmtEta(selected.ocr_eta_seconds) || '—'}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-[11px] uppercase tracking-wide text-[var(--muted)]">Saved</dt>
-                <dd className="text-[13px]">
-                  {selected.extracted_at
-                    ? new Date(selected.extracted_at).toLocaleString()
-                    : 'Not yet'}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-[11px] uppercase tracking-wide text-[var(--muted)]">File</dt>
-                <dd className="break-all text-[12px] text-[var(--muted)]">{selected.filename}</dd>
-              </div>
-              {selected.error_message ? (
-                <div>
-                  <dt className="text-[11px] uppercase tracking-wide text-red-600">Problem</dt>
-                  <dd className="text-[12px] text-red-700">{selected.error_message}</dd>
-                </div>
-              ) : null}
-            </dl>
-          )}
-        </Panel>
-      </div>
+      {selected ? <FileModal file={list.find((f) => String(f.id) === String(selected.id)) || selected} onClose={() => setSelected(null)} /> : null}
     </section>
   );
 }

@@ -10,6 +10,15 @@ const prisma = new PrismaClient({
 async function initDb() {
   await prisma.$connect();
   await prisma.$executeRawUnsafe('CREATE SCHEMA IF NOT EXISTS voterdb');
+  try {
+    await prisma.$executeRawUnsafe(`
+      ALTER TABLE voterdb.electors
+        ADD COLUMN IF NOT EXISTS section_no smallint,
+        ADD COLUMN IF NOT EXISTS section_name text
+    `);
+  } catch (err) {
+    console.warn('elector column ensure:', err.message);
+  }
   const rows = await prisma.$queryRaw`
     SELECT current_database() AS db, current_user AS usr
   `;
