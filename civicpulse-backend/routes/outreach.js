@@ -1,3 +1,5 @@
+const { logAudit } = require('../lib/audit');
+
 /** Outreach: every contact made with a voter (visit, call, WhatsApp, SMS, event). */
 const TYPE_IN = {
   visit: 'door',
@@ -47,7 +49,7 @@ module.exports = function registerOutreach({ app, prisma, Prisma, ok, fail, asyn
 
       const [rows, count] = await Promise.all([
         prisma.$queryRaw`
-          SELECT o.id, o.type::text AS type, o.outcome, o.notes, o.created_by_role, o.created_at,
+          SELECT o.id, o.type::text AS type, o.outcome, o.notes, o.created_by_role, o.created_at, o.updated_at,
                  e.id AS voter_id, e.name AS voter_name, e.part_no, e.house_no, e.section_name
           FROM public.outreach o JOIN voterdb.electors e ON e.id = o.elector_id
           ${where} ORDER BY o.created_at DESC, o.id DESC LIMIT ${limit} OFFSET ${offset}`,
@@ -113,6 +115,15 @@ module.exports = function registerOutreach({ app, prisma, Prisma, ok, fail, asyn
         },
       });
 
+      await logAudit(prisma, {
+        entity: 'outreach',
+        entityId: row.id,
+        action: 'create',
+        actorRole: created_by_role,
+        summary: `Logged ${TYPE_OUT[row.type]} contact${row.outcome ? ` (${row.outcome})` : ''}`,
+        after: row,
+      });
+
       // A real conversation moves the voter on from "not contacted".
       if (voter.status === 'active' && !/not home/i.test(outcome || '')) {
         await prisma.elector.update({
@@ -121,6 +132,90 @@ module.exports = function registerOutreach({ app, prisma, Prisma, ok, fail, asyn
         });
       }
       ok(res, { ...row, type: TYPE_OUT[row.type] || row.type });
+    })
+  );
+
+  const snapshot = (r) => ({ elector_id: r.electorId, type: TYPE_OUT[r.type] || r.type, outcome: r.outcome, notes: r.notes });
+
+  app.put(
+    '/api/outreach/:id',
+    asyncHandler(async (req, res) => {
+      const id = BigInt(req.params.id);
+      const { type, outcome, notes, actor_role } = req.body || {};
+      const old = await prisma.outreach.findUnique({ where: { id } });
+      if (!old) return fail(res, 404, 'Contact not found');
+      const data = {};
+      if (type !== undefined) {
+        const mapped = TYPE_IN[String(type).toLowerCase()];
+        if (!mapped) return fail(res, 400, 'Invalid type');
+        data.type = mapped;
+      }
+      if (outcome !== undefined) data.outcome = outcome ? String(outcome).slice(0, 80) : null;
+      if (notes !== undefined) data.notes = notes ? String(notes).slice(0, 500) : null;
+      const row = await prisma.outreach.update({ where: { id }, data });
+      await prisma.$executeRaw`UPDATE public.outreach SET updated_at = now() WHERE id = ${id}`;
+      const before = snapshot(old);
+      const after = snapshot(row);
+      const changed = Object.keys(after).filter((k) => before[k] !== after[k]);
+      await logAudit(prisma, {
+        entity: 'outreach',
+        entityId: id,
+        action: 'update',
+        actorRole: actor_role,
+        summary: changed.length ? `Edited ${changed.join(', ')}` : 'Saved with no changes',
+        before,
+        after,
+      });
+      ok(res, { ...row, type: TYPE_OUT[row.type] || row.type });
+    })
+  );
+
+  app.delete(
+    '/api/outreach/:id',
+    asyncHandler(async (req, res) => {
+      const id = BigInt(req.params.id);
+      const old = await prisma.outreach.findUnique({ where: { id } });
+      if (!old) return fail(res, 404, 'Contact not found');
+      await prisma.outreach.delete({ where: { id } });
+      await logAudit(prisma, {
+        entity: 'outreach',
+        entityId: id,
+        action: 'delete',
+        actorRole: req.query.actor_role,
+        summary: `Deleted ${TYPE_OUT[old.type] || old.type} contact`,
+        before: snapshot(old),
+      });
+      ok(res, { id: String(id) });
+    })
+  );
+
+  /** History of one contact — still available after it is deleted. */
+  app.get(
+    '/api/outreach/:id/history',
+    asyncHandler(async (req, res) => {
+      const rows = await prisma.$queryRaw`
+        SELECT id, action, actor_role, summary, before_data, after_data, created_at
+        FROM public.audit_log WHERE entity = 'outreach' AND entity_id = ${BigInt(req.params.id)}
+        ORDER BY created_at DESC, id DESC`;
+      ok(res, rows);
+    })
+  );
+
+  /** Activity log across the app, latest first. */
+  app.get(
+    '/api/audit',
+    asyncHandler(async (req, res) => {
+      const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
+      const offset = (Math.max(Number(req.query.page) || 1, 1) - 1) * limit;
+      const entity = req.query.entity ? String(req.query.entity) : null;
+      const [rows, count] = await Promise.all([
+        prisma.$queryRaw`
+          SELECT id, entity, entity_id, action, actor_role, summary, created_at FROM public.audit_log
+          WHERE (${entity}::text IS NULL OR entity = ${entity})
+          ORDER BY created_at DESC, id DESC LIMIT ${limit} OFFSET ${offset}`,
+        prisma.$queryRaw`SELECT COUNT(*)::int AS n FROM public.audit_log WHERE (${entity}::text IS NULL OR entity = ${entity})`,
+      ]);
+      ok(res, { rows, total: count[0].n });
     })
   );
 };

@@ -4,7 +4,7 @@ import { getDashboardSummary } from '../api/dashboard';
 import { getVoterStats } from '../api/voters';
 import { useAuth } from '../auth/AuthContext';
 import AlertBanner from '../components/ui/AlertBanner';
-import LoadingBlock from '../components/ui/LoadingBlock';
+import PageSkeleton from "../components/ui/PageSkeleton";
 import PageHeader from '../components/ui/PageHeader';
 import { Pill, StatStrip, btnTool, btnToolPrimary } from '../components/ui/kit';
 import { AgePyramid, ChartCard, GenderDonut } from '../components/voters/VoterCharts';
@@ -91,7 +91,7 @@ export default function DashboardPage() {
       <AlertBanner tone="danger">{summary.error || voters.error}</AlertBanner>
 
       {summary.loading && !summary.data ? (
-        <LoadingBlock label="Loading…" />
+        <PageSkeleton variant="dashboard" bare />
       ) : t ? (
         <>
           <StatStrip
@@ -128,7 +128,7 @@ export default function DashboardPage() {
                     {booths.map((b) => (
                       <Link
                         key={b.part_no}
-                        to="/app/booths"
+                        to={`/app/booths?q=${b.part_no}`}
                         title={`Booth ${b.part_no} · ${stationName(b.polling_station_name, b.part_no)} · ${reachedPct(b)}% reached`}
                         className="flex aspect-square items-center justify-center rounded-md text-[9px] font-bold ring-1 ring-inset ring-[var(--line)] transition hover:scale-110 hover:ring-2 hover:ring-[var(--brand)]"
                         style={{ background: reachStep(reachedPct(b)).color, color: reachedPct(b) >= 25 ? '#fff' : 'var(--ink-soft)' }}

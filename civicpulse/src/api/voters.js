@@ -29,3 +29,11 @@ export function downloadVoters(params = {}) {
     return data;
   });
 }
+
+export function deleteVoter(id, actorRole) {
+  return client.delete(`/voters/${id}`, { params: { actor_role: actorRole } }).then(unwrap);
+}
+
+export function getVoterHistory(id) {
+  return client.get(`/voters/${id}/history`).then(unwrap);
+}

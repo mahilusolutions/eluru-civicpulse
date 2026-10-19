@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { ArrowRight, X } from 'lucide-react';
+import { apiAssetUrl } from '../../api/baseUrl';
 import { getBooth, updateBooth } from '../../api/booths';
 import { btnPrimary, inputClass } from '../ui/Panel';
 import { AgePyramid, BarList } from '../voters/VoterCharts';
@@ -24,11 +25,13 @@ function Title({ children }) {
 }
 
 export default function BoothModal({ part, canEdit, onClose, onSaved }) {
+  const navigate = useNavigate();
   const [booth, setBooth] = useState(null);
   const [error, setError] = useState('');
   const [form, setForm] = useState({ agent_name: '', coordinator_name: '', status: 'pending', lat: '', lng: '' });
   const [saving, setSaving] = useState(false);
   const [note, setNote] = useState('');
+  const [shot, setShot] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -144,6 +147,9 @@ export default function BoothModal({ part, canEdit, onClose, onSaved }) {
                     <Row label="Constituency">{roll?.assembly || `${booth.ac_name} (${booth.ac_code})`}</Row>
                     <Row label="Place">{[roll?.main_town, roll?.pin_code].filter(Boolean).join(' · ')}</Row>
                     <Row label="Ward">{booth.ward_name ? `${booth.ward_no ? `Ward ${booth.ward_no} · ` : ''}${booth.ward_name}` : null}</Row>
+                    <Row label="Booth agent">{booth.agent_name || 'Not assigned'}</Row>
+                    <Row label="Coordinator">{booth.coordinator_name || 'Not assigned'}</Row>
+                    <Row label="Location">{booth.lat != null && booth.lng != null ? `${booth.lat}, ${booth.lng}` : 'Not set'}</Row>
                     <Row label="Voters">{fmt(booth.voters)}</Row>
                     <Row label="Men · Women">
                       {fmt(booth.male)} · {fmt(booth.female)}
@@ -164,15 +170,31 @@ export default function BoothModal({ part, canEdit, onClose, onSaved }) {
 
                 <div className="min-w-0 space-y-4">
                   <section>
-                    <Title>Roads in this booth</Title>
-                    <BarList items={roads} onPick={() => {}} empty="No roads read from the list." />
+                    <Title>Roads in this booth · click one to see its voters</Title>
+                    <BarList items={roads} onPick={(item) => navigate(`/app/voters?part=${part}&section=${item.key}`)} empty="No roads read from the list." />
                   </section>
                   <section>
-                    <Title>Age groups</Title>
-                    <AgePyramid bands={booth.age_bands || []} active={null} onPick={() => {}} />
+                    <Title>Age groups · click one to see those voters</Title>
+                    <AgePyramid bands={booth.age_bands || []} active={null} onPick={(band) => band !== 'all' && navigate(`/app/voters?part=${part}&age=${encodeURIComponent(band)}`)} />
                   </section>
                 </div>
               </div>
+
+              {booth.pictures?.length ? (
+                <section>
+                  <Title>Booth pictures · click to enlarge</Title>
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                    {booth.pictures.map((m) => (
+                      <button key={m.kind} type="button" onClick={() => setShot(m)} className="group overflow-hidden rounded-xl border border-[var(--line)] bg-white text-left transition hover:border-[var(--brand)]">
+                        <div className="flex aspect-[4/3] items-center justify-center bg-[var(--bg-muted)]">
+                          <img src={apiAssetUrl(m.url)} alt={m.label} loading="lazy" className="h-full w-full object-contain" />
+                        </div>
+                        <span className="block border-t border-[var(--line)] px-2.5 py-1.5 text-xs font-semibold text-[var(--ink-soft)] group-hover:text-[var(--brand)]">{m.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
 
               <section className="rounded-xl border border-[var(--line)] bg-[var(--bg-muted)]/50 p-3">
                 <Title>Who looks after this booth</Title>
@@ -273,6 +295,29 @@ export default function BoothModal({ part, canEdit, onClose, onSaved }) {
           ) : null}
         </div>
       </div>
+      {shot ? (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[var(--ink)]/60 p-3" role="dialog" aria-label={shot.label}>
+          <button type="button" aria-label="Close image" className="absolute inset-0 cursor-default" onClick={() => setShot(null)} />
+          <div className="relative flex max-h-full max-w-3xl flex-col overflow-hidden rounded-xl bg-white">
+            <div className="flex items-center justify-between gap-3 border-b border-[var(--line)] px-3 py-2">
+              <p className="text-sm font-bold text-[var(--ink)]">
+                {shot.label}
+              </p>
+              <div className="flex items-center gap-2">
+                <a href={apiAssetUrl(shot.url)} target="_blank" rel="noreferrer" className="text-xs font-semibold text-[var(--brand)] hover:underline">
+                  Open full size
+                </a>
+                <button type="button" onClick={() => setShot(null)} className="rounded-lg p-1 text-[var(--muted)] hover:bg-[var(--bg-muted)]" aria-label="Close image">
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+            <div className="overflow-auto">
+              <img src={apiAssetUrl(shot.url)} alt={shot.label} className="mx-auto h-auto w-full" />
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>,
     document.body
   );

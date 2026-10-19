@@ -1,4 +1,6 @@
 /** Election day: slips printed, votes cast and turnout for every booth. */
+const { logAudit } = require('../lib/audit');
+
 module.exports = function registerElectionDay({ app, prisma, ok, fail, asyncHandler }) {
   async function load(partNo = null) {
     // partNo is always a Number here (never user text), so inlining it is safe.
@@ -58,7 +60,17 @@ module.exports = function registerElectionDay({ app, prisma, ok, fail, asyncHand
         create: { partNo, slipPrinted: nextSlip, votedCount: nextVoted, missingCount: Math.max(0, current.voters - nextVoted), turnoutPct: turnout },
         update: { slipPrinted: nextSlip, votedCount: nextVoted, missingCount: Math.max(0, current.voters - nextVoted), turnoutPct: turnout },
       });
-      ok(res, (await load(partNo))[0]);
+      const fresh = (await load(partNo))[0];
+      await logAudit(prisma, {
+        entity: 'election_day',
+        entityId: partNo,
+        action: 'update',
+        actorRole: req.body?.actor_role,
+        summary: `Booth ${partNo}: voted ${current.voted_count} → ${nextVoted}, slips ${current.slip_printed} → ${nextSlip}`,
+        before: { voted_count: current.voted_count, slip_printed: current.slip_printed },
+        after: { voted_count: nextVoted, slip_printed: nextSlip },
+      });
+      ok(res, fresh);
     })
   );
 };

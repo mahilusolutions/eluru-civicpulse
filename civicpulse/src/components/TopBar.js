@@ -1,17 +1,19 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
-  Bell,
   ChevronDown,
   LogOut,
   Menu,
   Search,
   UserRound,
 } from 'lucide-react';
+import { getVoters } from '../api/voters';
 import { useAuth } from '../auth/AuthContext';
 import { NAV_ITEMS, ROLE_OPTIONS } from '../auth/roles';
 import { useSidebar } from '../layout/SidebarContext';
 import ThemeToggle from './ThemeToggle';
+import VoterModal from './voters/VoterModal';
+import { niceName } from '../utils/voterFormat';
 
 export default function TopBar() {
   const { role, roleLabel, login, logout } = useAuth();
@@ -26,11 +28,69 @@ export default function TopBar() {
     return match?.label || 'Workspace';
   }, [location.pathname]);
 
+  const [hits, setHits] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(-1);
+  const [viewId, setViewId] = useState(null);
+  const boxRef = useRef(null);
+  const text = query.trim();
+
+  // Suggestions: look up matching voters shortly after the last key.
+  useEffect(() => {
+    if (text.length < 2) {
+      setHits([]);
+      setSearching(false);
+      return undefined;
+    }
+    let cancelled = false;
+    setSearching(true);
+    const t = setTimeout(() => {
+      getVoters({ q: text, limit: 8 })
+        .then((data) => {
+          if (cancelled) return;
+          setHits(data?.rows || []);
+          setActive(-1);
+        })
+        .catch(() => !cancelled && setHits([]))
+        .finally(() => !cancelled && setSearching(false));
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [text]);
+
+  // Close the list when clicking elsewhere.
+  useEffect(() => {
+    const away = (e) => boxRef.current && !boxRef.current.contains(e.target) && setOpen(false);
+    document.addEventListener('mousedown', away);
+    return () => document.removeEventListener('mousedown', away);
+  }, []);
+
+  function pick(voter) {
+    setOpen(false);
+    setViewId(voter.id);
+  }
+
   function handleSearch(event) {
     event.preventDefault();
-    const q = query.trim();
-    navigate(q ? `/app/voters?q=${encodeURIComponent(q)}` : '/app/voters');
-    setQuery('');
+    if (active >= 0 && hits[active]) return pick(hits[active]);
+    setOpen(false);
+    return navigate(text ? `/app/voters?q=${encodeURIComponent(text)}` : '/app/voters');
+  }
+
+  function handleKey(event) {
+    if (event.key === 'ArrowDown' && hits.length) {
+      event.preventDefault();
+      setOpen(true);
+      setActive((i) => (i + 1) % hits.length);
+    } else if (event.key === 'ArrowUp' && hits.length) {
+      event.preventDefault();
+      setActive((i) => (i <= 0 ? hits.length - 1 : i - 1));
+    } else if (event.key === 'Escape') {
+      setOpen(false);
+    }
   }
 
   function handleLogout() {
@@ -65,31 +125,67 @@ export default function TopBar() {
         </h1>
       </div>
 
-      <div className="mx-auto hidden max-w-md flex-1 md:block">
+      <div ref={boxRef} className="relative mx-auto hidden max-w-md flex-1 md:block">
         <form onSubmit={handleSearch} role="search" className="relative block">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--muted)]" />
           <input
             type="search"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setOpen(true);
+            }}
+            onFocus={() => setOpen(true)}
+            onKeyDown={handleKey}
             aria-label="Search voters"
+            autoComplete="off"
             placeholder="Search voters by name, ID or house…"
             className="w-full rounded-xl border border-[var(--line)] bg-[var(--bg)] py-2 pl-9 pr-3 text-sm text-[var(--ink)] outline-none placeholder:text-[var(--muted)] focus:border-[var(--brand)]"
           />
         </form>
+
+        {open && text.length >= 2 ? (
+          <div className="absolute left-0 right-0 top-full z-30 mt-1.5 overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--bg-elevated)] shadow-[0_12px_40px_-12px_rgba(15,27,45,0.35)]">
+            {searching && !hits.length ? <p className="px-3 py-3 text-sm text-[var(--muted)]">Searching…</p> : null}
+            {!searching && !hits.length ? <p className="px-3 py-3 text-sm text-[var(--muted)]">No voters match “{text}”.</p> : null}
+            <ul role="listbox">
+              {hits.map((v, i) => (
+                <li key={v.id} role="option" aria-selected={i === active}>
+                  <button
+                    type="button"
+                    onClick={() => pick(v)}
+                    onMouseEnter={() => setActive(i)}
+                    className={`flex w-full items-center gap-3 px-3 py-2 text-left transition ${i === active ? 'bg-[var(--bg-muted)]' : ''}`}
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-semibold text-[var(--ink)]">{niceName(v.name)}</span>
+                      <span className="block truncate text-xs text-[var(--muted)]">
+                        Booth {v.part_no}
+                        {v.house_number ? ` · House ${v.house_number}` : ''}
+                        {v.section_name ? ` · ${niceName(v.section_name)}` : ''}
+                        {v.epic ? ` · ${v.epic}` : ''}
+                      </span>
+                    </span>
+                    <span className="shrink-0 text-xs text-[var(--muted)]">{v.age != null ? `Age ${v.age}` : ''}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+            {hits.length ? (
+              <button
+                type="button"
+                onClick={handleSearch}
+                className="block w-full border-t border-[var(--line)] px-3 py-2 text-left text-xs font-semibold text-[var(--brand)] hover:bg-[var(--bg-muted)]"
+              >
+                See all results for “{text}”
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       <div className="ml-auto flex items-center gap-2">
         <ThemeToggle compact className="h-9 w-9 justify-center px-0" />
-
-        <button
-          type="button"
-          className="relative inline-flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--line)] text-[var(--muted)] transition hover:text-[var(--ink)]"
-          aria-label="Notifications"
-          title="Notifications"
-        >
-          <Bell className="h-4 w-4" />
-        </button>
 
         <div className="relative">
           <button
@@ -160,6 +256,7 @@ export default function TopBar() {
           ) : null}
         </div>
       </div>
+      {viewId != null ? <VoterModal id={viewId} onClose={() => setViewId(null)} onSelect={setViewId} /> : null}
     </header>
   );
 }

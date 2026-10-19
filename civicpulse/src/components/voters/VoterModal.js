@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, Home, X } from 'lucide-react';
+import { AlertTriangle, History, Home, MapPin, Pencil, Trash2, X } from 'lucide-react';
 import { apiAssetUrl } from '../../api/baseUrl';
-import { getVoter } from '../../api/voters';
+import { deleteVoter, getVoter, getVoterHistory, updateVoter } from '../../api/voters';
+import { useAuth } from '../../auth/AuthContext';
+import { ROLES, ROLE_LABELS } from '../../auth/roles';
+import { btnPrimary, inputClass } from '../ui/Panel';
 import {
   genderColor,
   genderLabel,
@@ -14,6 +17,7 @@ import {
 } from '../../utils/voterFormat';
 
 const assetUrl = apiAssetUrl;
+const label = (v) => String(v).replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
 
 /** One labelled line: label on the left, value on the right. */
 function Row({ label, children, mono = false }) {
@@ -36,7 +40,195 @@ function SectionTitle({ icon: IconCmp, children }) {
   );
 }
 
-export default function VoterModal({ id, onClose, onSelect }) {
+const STATUSES = ['active', 'visited', 'callback', 'shifted', 'deceased', 'duplicate', 'inactive'];
+const LEANS = ['strong_yes', 'lean_yes', 'undecided', 'lean_no', 'strong_no', 'unknown'];
+const STATUS_LABEL = { active: 'Not contacted yet', visited: 'Visited', callback: 'Call back later', shifted: 'Shifted away', deceased: 'Deceased', duplicate: 'Duplicate entry', inactive: 'Inactive' };
+const LEAN_LABEL = { strong_yes: 'Strongly supports', lean_yes: 'Leans yes', undecided: 'Undecided', lean_no: 'Leans no', strong_no: 'Strongly against', unknown: 'Unknown' };
+const FIELD_LABEL = { name: 'Name', relation_type: 'Relation', relation_name: 'Relative name', house_no: 'House number', epic: 'Voter ID', age: 'Age', gender: 'Gender', phone: 'Phone', status: 'Status', support_lean: 'Support', relationType: 'Relation', relationName: 'Relative name', houseNo: 'House number', supportLean: 'Support' };
+
+function Input({ label: text, children }) {
+  return (
+    <label className="block text-[11px] font-semibold text-[var(--muted)]">
+      {text}
+      <div className="mt-1">{children}</div>
+    </label>
+  );
+}
+
+function EditForm({ voter, role, onCancel, onSaved }) {
+  const [f, setF] = useState({
+    name: voter.name || '',
+    relation_type: voter.relation_type || 'father',
+    relation_name: voter.relation_name || '',
+    house_no: voter.house_no || '',
+    age: voter.age ?? '',
+    gender: voter.gender || 'U',
+    epic: voter.epic || '',
+    phone: voter.phone || '',
+    status: voter.status || 'active',
+    support_lean: voter.support_lean || 'unknown',
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+
+  async function save(e) {
+    e.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      await updateVoter(voter.id, { ...f, age: f.age === '' ? null : Number(f.age), actor_role: role });
+      onSaved();
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={save} className="space-y-3">
+      {error ? <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+      <p className="text-xs text-[var(--muted)]">Compare with the printed card on the Details view. Only change what is wrong.</p>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Input label="Name">
+          <input value={f.name} onChange={set('name')} required maxLength={200} className={`${inputClass} !py-2`} />
+        </Input>
+        <Input label="Voter ID">
+          <input value={f.epic} onChange={set('epic')} maxLength={20} className={`${inputClass} !py-2 font-mono`} />
+        </Input>
+        <Input label="Relation">
+          <select value={f.relation_type} onChange={set('relation_type')} className={`${inputClass} !py-2`}>
+            <option value="father">Father</option>
+            <option value="mother">Mother</option>
+            <option value="husband">Husband</option>
+            <option value="other">Other relative</option>
+          </select>
+        </Input>
+        <Input label="Relative’s name">
+          <input value={f.relation_name} onChange={set('relation_name')} maxLength={200} className={`${inputClass} !py-2`} />
+        </Input>
+        <Input label="House number">
+          <input value={f.house_no} onChange={set('house_no')} maxLength={40} className={`${inputClass} !py-2`} />
+        </Input>
+        <Input label="Phone">
+          <input value={f.phone} onChange={set('phone')} inputMode="tel" maxLength={20} placeholder="Optional" className={`${inputClass} !py-2`} />
+        </Input>
+        <Input label="Age">
+          <input value={f.age} onChange={set('age')} type="number" min="18" max="120" inputMode="numeric" className={`${inputClass} !py-2`} />
+        </Input>
+        <Input label="Gender">
+          <select value={f.gender} onChange={set('gender')} className={`${inputClass} !py-2`}>
+            <option value="M">Male</option>
+            <option value="F">Female</option>
+            <option value="O">Other</option>
+            <option value="U">Not known</option>
+          </select>
+        </Input>
+        <Input label="Status">
+          <select value={f.status} onChange={set('status')} className={`${inputClass} !py-2`}>
+            {STATUSES.map((s) => (
+              <option key={s} value={s}>
+                {STATUS_LABEL[s]}
+              </option>
+            ))}
+          </select>
+        </Input>
+        <Input label="Support">
+          <select value={f.support_lean} onChange={set('support_lean')} className={`${inputClass} !py-2`}>
+            {LEANS.map((s) => (
+              <option key={s} value={s}>
+                {LEAN_LABEL[s]}
+              </option>
+            ))}
+          </select>
+        </Input>
+      </div>
+      <div className="flex justify-end gap-2 pt-1">
+        <button type="button" onClick={onCancel} className="rounded-xl px-3 py-2 text-xs font-semibold text-[var(--muted)] hover:text-[var(--ink)]">
+          Cancel
+        </button>
+        <button type="submit" disabled={busy} className={`${btnPrimary} !py-2`}>
+          {busy ? 'Saving…' : 'Save changes'}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function DeletePanel({ voter, role, onCancel, onDeleted }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  async function remove() {
+    setBusy(true);
+    setError('');
+    try {
+      await deleteVoter(voter.id, role);
+      onDeleted();
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  }
+  const contacts = voter.outreach?.length || 0;
+  return (
+    <div className="space-y-3 rounded-xl border border-red-200 bg-red-50/60 p-4">
+      {error ? <p className="text-sm text-red-700">{error}</p> : null}
+      <p className="text-sm font-bold text-[var(--ink)]">Delete {niceName(voter.name)} from the voter list?</p>
+      <p className="text-sm text-[var(--ink-soft)]">
+        They will be removed from the list and from all counts{contacts ? `, along with ${contacts} logged contact${contacts === 1 ? '' : 's'}` : ''}. A full copy is kept in the history log. If they only moved away or passed on, change their <span className="font-semibold">Status</span> with Edit instead.
+      </p>
+      <div className="flex justify-end gap-2">
+        <button type="button" onClick={onCancel} className="rounded-xl px-3 py-2 text-xs font-semibold text-[var(--muted)] hover:text-[var(--ink)]">
+          Keep voter
+        </button>
+        <button type="button" onClick={remove} disabled={busy} className={`${btnPrimary} !bg-red-600 !py-2`}>
+          {busy ? 'Deleting…' : 'Yes, delete'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function HistoryPanel({ id }) {
+  const [events, setEvents] = useState(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    getVoterHistory(id)
+      .then(setEvents)
+      .catch((err) => setError(err.message));
+  }, [id]);
+  const verb = { create: 'Added', update: 'Edited', delete: 'Deleted' };
+  if (error) return <p className="text-sm text-[var(--danger)]">{error}</p>;
+  if (!events) return <p className="py-6 text-center text-sm text-[var(--muted)]">Loading history…</p>;
+  if (!events.length) return <p className="py-6 text-center text-sm text-[var(--muted)]">No changes have been made to this voter yet.</p>;
+  return (
+    <ol className="space-y-3">
+      {events.map((e) => {
+        const keys = e.action === 'update' ? Object.keys(e.after_data || {}) : [];
+        return (
+          <li key={e.id} className="rounded-xl border border-[var(--line)] p-3">
+            <p className="text-sm font-semibold text-[var(--ink)]">
+              {verb[e.action] || e.action} <span className="font-normal text-[var(--muted)]">by {ROLE_LABELS[e.actor_role] || (e.actor_role === 'system' ? 'System' : 'Unknown')}</span>
+            </p>
+            <p className="text-xs text-[var(--muted)]">{new Date(e.created_at).toLocaleString()}</p>
+            {keys.map((k) => (
+              <p key={k} className="mt-1 text-xs text-[var(--ink-soft)]">
+                {FIELD_LABEL[k] || k}: <span className="line-through">{String(e.before_data?.[k] ?? '—')}</span> → <span className="font-semibold">{String(e.after_data?.[k] ?? '—')}</span>
+              </p>
+            ))}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+export default function VoterModal({ id, onClose, onSelect, onChanged }) {
+  const { role } = useAuth();
+  const canEdit = role !== ROLES.VIEWER && role !== ROLES.VOLUNTEER;
+  const canDelete = [ROLES.SUPER_ADMIN, ROLES.ADMIN].includes(role);
+  const [mode, setMode] = useState('view');
+  const [reloadKey, setReloadKey] = useState(0);
   const [voter, setVoter] = useState(null);
   const [error, setError] = useState('');
   const [imgBroken, setImgBroken] = useState(false);
@@ -54,6 +246,10 @@ export default function VoterModal({ id, onClose, onSelect }) {
     return () => {
       cancelled = true;
     };
+  }, [id, reloadKey]);
+
+  useEffect(() => {
+    setMode('view');
   }, [id]);
 
   useEffect(() => {
@@ -102,11 +298,28 @@ export default function VoterModal({ id, onClose, onSelect }) {
             </h2>
             {voter ? (
               <p className="mt-0.5 text-xs text-[var(--muted)]">
-                Booth {voter.part_no} · Voter no. {voter.serial_no}
-                {voter.page_no ? ` · List page ${voter.page_no}` : ''}
+                Booth {voter.part_no}
+                {voter.booth?.polling_station_name ? ` · ${voter.booth.polling_station_name}` : ''}
               </p>
             ) : null}
           </div>
+          {voter ? (
+            <div className="flex items-center gap-1">
+              <button type="button" onClick={() => setMode(mode === 'history' ? 'view' : 'history')} title="History" aria-label="History" className={`rounded-lg p-1.5 transition hover:bg-[var(--bg-muted)] ${mode === 'history' ? 'text-[var(--brand)]' : 'text-[var(--muted)] hover:text-[var(--ink)]'}`}>
+                <History className="h-[18px] w-[18px]" />
+              </button>
+              {canEdit ? (
+                <button type="button" onClick={() => setMode(mode === 'edit' ? 'view' : 'edit')} title="Edit" aria-label="Edit" className={`rounded-lg p-1.5 transition hover:bg-[var(--bg-muted)] ${mode === 'edit' ? 'text-[var(--brand)]' : 'text-[var(--muted)] hover:text-[var(--brand)]'}`}>
+                  <Pencil className="h-[18px] w-[18px]" />
+                </button>
+              ) : null}
+              {canDelete ? (
+                <button type="button" onClick={() => setMode('delete')} title="Delete" aria-label="Delete" className="rounded-lg p-1.5 text-[var(--muted)] transition hover:bg-red-50 hover:text-red-600">
+                  <Trash2 className="h-[18px] w-[18px]" />
+                </button>
+              ) : null}
+            </div>
+          ) : null}
           <button
             type="button"
             onClick={onClose}
@@ -122,7 +335,32 @@ export default function VoterModal({ id, onClose, onSelect }) {
           {error ? <p className="text-sm text-[var(--danger)]">{error}</p> : null}
           {!voter && !error ? <p className="py-8 text-center text-sm text-[var(--muted)]">Loading details…</p> : null}
 
-          {voter ? (
+          {voter && mode === 'edit' ? (
+            <EditForm
+              voter={voter}
+              role={role}
+              onCancel={() => setMode('view')}
+              onSaved={() => {
+                setMode('view');
+                setReloadKey((k) => k + 1);
+                onChanged?.();
+              }}
+            />
+          ) : null}
+          {voter && mode === 'delete' ? (
+            <DeletePanel
+              voter={voter}
+              role={role}
+              onCancel={() => setMode('view')}
+              onDeleted={() => {
+                onChanged?.();
+                onClose();
+              }}
+            />
+          ) : null}
+          {voter && mode === 'history' ? <HistoryPanel id={voter.id} /> : null}
+
+          {voter && mode === 'view' ? (
             <div className="space-y-3">
               {missing.length ? (
                 <div className="flex items-start gap-2 rounded-lg bg-[var(--viz-warn)]/15 px-3 py-2 text-xs text-[var(--ink-soft)]">
@@ -150,10 +388,26 @@ export default function VoterModal({ id, onClose, onSelect }) {
                     </Row>
                     {voter.address_note ? <Row label="Address note">{voter.address_note}</Row> : null}
                     <Row label="Road">{road}</Row>
-                    <Row label="Booth">{String(voter.part_no)}</Row>
-                    <Row label="Voter no. in list">{String(voter.serial_no)}</Row>
-                    <Row label="List page">{voter.page_no ? String(voter.page_no) : null}</Row>
+                    {voter.phone ? <Row label="Phone">{voter.phone}</Row> : null}
+                    {voter.status ? <Row label="Status">{label(voter.status)}</Row> : null}
+                    {voter.support_lean ? <Row label="Support">{label(voter.support_lean)}</Row> : null}
                   </dl>
+
+                  <div className="mt-3">
+                    <SectionTitle icon={MapPin}>Booth</SectionTitle>
+                    <dl>
+                      <Row label="Booth">{`Booth ${voter.part_no}`}</Row>
+                      <Row label="Polling station">{voter.booth?.polling_station_name}</Row>
+                      <Row label="Address">{voter.booth?.polling_station_address}</Row>
+                      <Row label="Area">{voter.booth?.area_name}</Row>
+                      {voter.booth?.ward ? <Row label="Ward">{voter.booth.ward}</Row> : null}
+                      {voter.booth?.agent_name ? <Row label="Booth agent">{voter.booth.agent_name}</Row> : null}
+                      {voter.booth?.coordinator_name ? <Row label="Coordinator">{voter.booth.coordinator_name}</Row> : null}
+                    </dl>
+                    <p className="mt-1.5 text-xs text-[var(--muted)]">
+                      Voter no. {voter.serial_no} on the list{voter.page_no ? ` · page ${voter.page_no}` : ''}
+                    </p>
+                  </div>
                 </section>
 
                 {/* Right: the printed card, and others in the same house */}

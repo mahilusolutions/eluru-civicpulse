@@ -251,9 +251,9 @@ function parseEciOcrText(text, partNo) {
  */
 function parseAgeDigits(raw) {
   let s = String(raw || '').trim();
-  if (!s || /[^0-9\/IlO|]/.test(s)) return null;
+  if (!s || /[^0-9\/IlOS|]/.test(s)) return null;
   // A slash touching a 7 is part of that glyph (7/5 = 75, 6/7 = 67); a lone slash is the 7 itself (/5 = 75, 3/ = 37).
-  s = s.replace(/\/(?=7)|(?<=7)\//g, '').replace(/\//g, '7').replace(/[Il|]/g, '1').replace(/O/g, '0');
+  s = s.replace(/\/(?=7)|(?<=7)\//g, '').replace(/\//g, '7').replace(/[Il|]/g, '1').replace(/O/g, '0').replace(/S/g, '5');
   const age = Number(s);
   return Number.isInteger(age) && age >= 18 && age <= 120 ? age : null;
 }
@@ -304,12 +304,12 @@ function parseCardBody(body, partNo, serial, meta = {}) {
 
   let age = null;
   let gender = null;
-  const ageGender = flat.match(/Age\s*[:;=]?\s*([0-9\/>IlO|]{1,4})\s*Gender\s*[:;=]?\s*(Male|Female|Third|M\b|F\b)/i);
+  const ageGender = flat.match(/Age\s*[:;=]?\s*([0-9\/>IlOS|]{1,4})\s*Gender\s*[:;=]?\s*(Male|Female|Third|M\b|F\b)/i);
   if (ageGender) {
     age = parseAgeDigits(ageGender[1]);
     gender = /^f/i.test(ageGender[2]) ? 'F' : /^t/i.test(ageGender[2]) ? 'O' : 'M';
   } else {
-    const a = flat.match(/Age\s*[:;=]?\s*([0-9\/>IlO|]{1,4})/i);
+    const a = flat.match(/Age\s*[:;=]?\s*([0-9\/>IlOS|]{1,4})/i);
     if (a) age = parseAgeDigits(a[1]);
     const g = flat.match(/Gender\s*[:;=]?\s*(Male|Female|Third)/i);
     if (g) gender = /^f/i.test(g[1]) ? 'F' : /^t/i.test(g[1]) ? 'O' : 'M';

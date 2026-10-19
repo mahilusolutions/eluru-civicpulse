@@ -742,7 +742,7 @@ export default function VotersPage() {
         )}
       </div>
 
-      {viewId != null ? <VoterModal id={viewId} onClose={() => setViewId(null)} onSelect={setViewId} /> : null}
+      {viewId != null ? <VoterModal id={viewId} onClose={() => setViewId(null)} onSelect={setViewId} onChanged={refreshAll} /> : null}
     </section>
   );
 }

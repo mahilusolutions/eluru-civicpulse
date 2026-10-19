@@ -9,6 +9,10 @@ const { serialize } = require('./lib/serialize');
 const { parseFilename } = require('./services/parseFilename');
 const { findPdftoppm } = require('./lib/poppler');
 const { splitHouse } = require('./lib/house');
+const compression = require('compression');
+const rateLimit = require('express-rate-limit');
+const { responseCache } = require('./lib/cache');
+const { logAudit } = require('./lib/audit');
 
 /** House number and address note as separate fields (the roll mixes them in one). */
 function houseFields(raw) {
@@ -24,6 +28,12 @@ const OCR_UPLOAD_DIR =
 const OCR_PAGE_IMAGES_DIR =
   process.env.OCR_PAGE_IMAGES_DIR || path.join(OCR_UPLOAD_DIR, 'page_images');
 const OCR_EXTRACT_URL = process.env.OCR_EXTRACT_URL || 'http://127.0.0.1:2000';
+
+/** Roll PDFs may sit in the OCR upload folder or in voter_data_eluru; use whichever has the file. */
+const ROLL_DIRS = [OCR_UPLOAD_DIR, path.resolve(__dirname, '../voter_data_eluru'), ...(process.env.ROLL_PDF_DIRS || '').split(',').map((d) => d.trim()).filter(Boolean)];
+function findRollPdf(doc) {
+  return [doc.storagePath, ...ROLL_DIRS.map((d) => path.join(d, doc.filename))].find((p) => p && fs.existsSync(p)) || null;
+}
 
 function pageImagePath(filename, pageNo) {
   if (!filename || pageNo == null) return null;
@@ -64,8 +74,35 @@ async function hydrateElectorExtras(rows) {
   return rows;
 }
 
-app.use(cors());
-app.use(express.json({ limit: '20mb' }));
+app.set('trust proxy', 1); // behind Nginx
+app.disable('x-powered-by');
+app.use(compression());
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
+// CORS_ORIGINS="https://eluru.mahilusolutions.com,https://other" locks the API to those sites (default: any, for local dev).
+const corsOrigins = (process.env.CORS_ORIGINS || '').split(',').map((o) => o.trim()).filter(Boolean);
+app.use(cors(corsOrigins.length ? { origin: corsOrigins } : undefined));
+// ~1000 people on one office/mobile network can share an IP, so the ceiling is generous; it only stops runaway clients.
+app.use(
+  '/api',
+  rateLimit({
+    windowMs: 60 * 1000,
+    limit: Number(process.env.RATE_LIMIT_PER_MIN || 600),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, message: 'Too many requests. Please wait a moment and try again.' },
+  })
+);
+app.use(express.json({ limit: '2mb' }));
+app.use(responseCache);
+app.get('/api/health', asyncHandler(async (_req, res) => {
+  await prisma.$queryRaw`SELECT 1`;
+  res.json({ success: true, status: 'ok', uptime_s: Math.round(process.uptime()) });
+}));
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => {
@@ -667,8 +704,24 @@ app.get(
         ORDER BY serial_no LIMIT 15`;
     }
 
+    const boothRow = await prisma.booth.findUnique({
+      where: { partNo: voter.partNo },
+      include: { ward: { select: { wardNo: true, name: true } } },
+    });
+    const booth = boothRow && {
+      part_no: boothRow.partNo,
+      polling_station_name: boothRow.pollingStationName,
+      polling_station_address: boothRow.pollingStationAddress,
+      area_name: boothRow.areaName,
+      ward: boothRow.ward ? `Ward ${boothRow.ward.wardNo} · ${boothRow.ward.name}` : null,
+      agent_name: boothRow.agentName,
+      coordinator_name: boothRow.coordinatorName,
+      voter_count: boothRow.voterCount,
+    };
+
     ok(res, {
       ...voter,
+      booth,
       card_image_url: voter.documentId && voter.pageNo != null ? `/api/voters/${voter.id}/card-image` : null,
       ...houseFields(voter.houseNo),
       household,
@@ -715,10 +768,8 @@ app.get(
     const cacheDir = path.join(OCR_PAGE_IMAGES_DIR, stem);
     const cached = path.join(cacheDir, `card-${voter.serialNo}.png`);
     if (!fs.existsSync(cached)) {
-      const pdfPath =
-        (doc.storagePath && fs.existsSync(doc.storagePath) && doc.storagePath) ||
-        path.join(OCR_UPLOAD_DIR, doc.filename);
-      if (!fs.existsSync(pdfPath)) return fail(res, 404, 'Roll file not available');
+      const pdfPath = findRollPdf(doc);
+      if (!pdfPath) return fail(res, 404, 'Roll file not available');
 
       const first = await prisma.$queryRaw`
         SELECT MIN(serial_no)::int AS n FROM voterdb.electors
@@ -766,10 +817,8 @@ app.get(
     let img = pageImagePath(doc.filename, pageNo);
     if (!img) {
       // Try generate once from stored PDF (cover / voter page preview)
-      const pdfPath =
-        (doc.storagePath && fs.existsSync(doc.storagePath) && doc.storagePath) ||
-        path.join(OCR_UPLOAD_DIR, doc.filename);
-      if (fs.existsSync(pdfPath)) {
+      const pdfPath = findRollPdf(doc);
+      if (pdfPath) {
         try {
           const { spawnSync } = require('child_process');
           const stem = path.parse(doc.filename).name;
@@ -895,7 +944,59 @@ app.patch(
     }
     if (!Object.keys(data).length) return fail(res, 400, 'Nothing to update');
     const voter = await prisma.elector.update({ where: { id }, data });
+    const before = {};
+    const after = {};
+    for (const key of Object.keys(data)) {
+      if (String(existing[key] ?? '') !== String(voter[key] ?? '')) {
+        before[key] = existing[key] ?? null;
+        after[key] = voter[key] ?? null;
+      }
+    }
+    if (Object.keys(after).length) {
+      await logAudit(prisma, {
+        entity: 'voter',
+        entityId: id,
+        action: 'update',
+        actorRole: b.actor_role,
+        summary: `Edited ${Object.keys(after).join(', ')}`,
+        before,
+        after,
+      });
+    }
     ok(res, voter);
+  })
+);
+
+// Removing a voter also removes their logged contacts; a full copy is kept in the history log.
+app.delete(
+  '/api/voters/:id',
+  asyncHandler(async (req, res) => {
+    const id = BigInt(req.params.id);
+    const existing = await prisma.elector.findUnique({ where: { id } });
+    if (!existing) return fail(res, 404, 'Voter not found');
+    const contacts = await prisma.outreach.count({ where: { electorId: id } });
+    const { rawOcrText, rawJson, ...snapshot } = existing;
+    await prisma.elector.delete({ where: { id } });
+    await logAudit(prisma, {
+      entity: 'voter',
+      entityId: id,
+      action: 'delete',
+      actorRole: req.query.actor_role,
+      summary: `Deleted voter ${existing.name} (booth ${existing.partNo}, no. ${existing.serialNo})${contacts ? ` and ${contacts} logged contact(s)` : ''}`,
+      before: snapshot,
+    });
+    ok(res, { id: String(id), contacts_removed: contacts });
+  })
+);
+
+app.get(
+  '/api/voters/:id/history',
+  asyncHandler(async (req, res) => {
+    const rows = await prisma.$queryRaw`
+      SELECT id, action, actor_role, summary, before_data, after_data, created_at
+      FROM public.audit_log WHERE entity = 'voter' AND entity_id = ${BigInt(req.params.id)}
+      ORDER BY created_at DESC, id DESC`;
+    ok(res, rows);
   })
 );
 
@@ -972,7 +1073,7 @@ app.get(
         SELECT ${AGE_BAND_CASE} AS band, gender::text AS gender, COUNT(*)::int AS count
         FROM voterdb.electors WHERE part_no = ${partNo} AND age IS NOT NULL GROUP BY 1, 2`,
       prisma.$queryRaw`
-        SELECT raw_meta FROM voterdb.extracted_documents WHERE part_no = ${partNo} LIMIT 1`,
+        SELECT id, page_count, raw_meta FROM voterdb.extracted_documents WHERE part_no = ${partNo} LIMIT 1`,
     ]);
 
     const age_bands = Object.keys(AGE_BANDS).map((band) => {
@@ -987,7 +1088,37 @@ app.get(
     });
 
     const meta = docs[0]?.raw_meta && typeof docs[0].raw_meta === 'object' ? docs[0].raw_meta : {};
-    ok(res, { ...booth, roads_list: roads, age_bands, roll_info: meta.roll_info || null });
+    // Pages of the printed roll that describe the booth: cover (areas, polling station), summary, last page.
+    const doc = docs[0];
+    const pageNos = doc ? [...new Set([1, 2, doc.page_count > 2 ? doc.page_count : null].filter(Boolean))] : [];
+    const pageLabel = (n) => (n === 1 ? 'Cover page' : n === 2 ? 'Roll summary' : 'Last page');
+    const media = pageNos.map((n) => ({
+      page_no: n,
+      label: pageLabel(n),
+      url: `/api/documents/${doc.id}/pages/${n}/image`,
+    }));
+
+    const pics = await prisma.$queryRaw`
+      SELECT kind, label, width, height FROM public.booth_media WHERE part_no = ${partNo}`;
+    const order = ['nazri_naksha', 'google_map', 'building_front', 'station_front', 'cad_view', 'key_map'];
+    const pictures = pics
+      .sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind))
+      .map((p) => ({ ...p, url: `/api/booths/${partNo}/media/${p.kind}` }));
+
+    ok(res, { ...booth, roads_list: roads, age_bands, roll_info: meta.roll_info || null, media, pictures });
+  })
+);
+
+// A booth picture (map, building photo, plan) stored in the database.
+app.get(
+  '/api/booths/:part/media/:kind',
+  asyncHandler(async (req, res) => {
+    const rows = await prisma.$queryRaw`
+      SELECT mime, data FROM public.booth_media WHERE part_no = ${Number(req.params.part)} AND kind = ${String(req.params.kind)}`;
+    if (!rows.length) return fail(res, 404, 'Picture not found');
+    res.setHeader('Content-Type', rows[0].mime);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.send(Buffer.from(rows[0].data));
   })
 );
 
@@ -1078,14 +1209,20 @@ app.use((err, _req, res, _next) => {
 
 initDb()
   .then(() => {
-    app.listen(PORT, () => {
+    const server = app.listen(PORT, () => {
       console.log(`CivicPulse API http://localhost:${PORT}/api`);
       console.log(`DB ${DATABASE_URL.replace(/:[^:@/]+@/, ':***@')}`);
       console.log(`OCR uploads → ${OCR_UPLOAD_DIR}`);
       console.log(`OCR recover → ${OCR_EXTRACT_URL}/api/recover`);
     });
+    server.keepAliveTimeout = 65000; // longer than Nginx's idle timeout
+    const stop = () => server.close(() => prisma.$disconnect().finally(() => process.exit(0)));
+    process.on('SIGTERM', stop);
+    process.on('SIGINT', stop);
   })
   .catch((err) => {
     console.error('DB connect failed:', err.message);
     process.exit(1);
   });
+
+process.on('unhandledRejection', (err) => console.error('unhandledRejection:', err));
