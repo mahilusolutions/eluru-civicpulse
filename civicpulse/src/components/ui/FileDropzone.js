@@ -3,6 +3,7 @@ import { FileUp, Upload } from 'lucide-react';
 
 export default function FileDropzone({
   accept,
+  multiple = false,
   disabled,
   onFiles,
   icon = 'upload',
@@ -49,6 +50,7 @@ export default function FileDropzone({
       <input
         type="file"
         accept={accept}
+        multiple={multiple}
         className="absolute inset-0 cursor-pointer opacity-0"
         disabled={disabled || busy}
         onChange={(e) => {

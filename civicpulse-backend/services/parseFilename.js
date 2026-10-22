@@ -1,11 +1,11 @@
 /** Parse ECI roll PDF filenames → year / part / AC. */
 function parseFilename(filename) {
-  const m = String(filename || '').match(/(\d{4}).*?S0?1-?65.*?ENG-(\d+)/i);
+  const m = String(filename || '').match(/(\d{4}).*?S0?1-?65.*?(?:ENG|TEL)-(\d+)/i);
   if (m) {
     return { year: Number(m[1]), part_no: Number(m[2]), ac_code: 'S01-65' };
   }
   const partOnly =
-    String(filename || '').match(/ENG-(\d+)/i) ||
+    String(filename || '').match(/(?:ENG|TEL)-(\d+)/i) ||
     String(filename || '').match(/part[-_ ]?(\d+)/i);
   return {
     year: 2026,

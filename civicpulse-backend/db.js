@@ -12,6 +12,7 @@ const prisma = new PrismaClient({
 /** Indexes that keep search and filters fast once all ~250k voters are loaded. Each one is optional. */
 async function ensureSearchIndexes() {
   const steps = [
+    'ALTER TABLE voterdb.electors ADD COLUMN IF NOT EXISTS phone text',
     'CREATE EXTENSION IF NOT EXISTS pg_trgm',
     'CREATE INDEX IF NOT EXISTS idx_electors_name_trgm ON voterdb.electors USING gin (name gin_trgm_ops)',
     'CREATE INDEX IF NOT EXISTS idx_electors_epic_trgm ON voterdb.electors USING gin (epic gin_trgm_ops)',
@@ -21,6 +22,10 @@ async function ensureSearchIndexes() {
     'CREATE INDEX IF NOT EXISTS idx_electors_part_age ON voterdb.electors (part_no, age)',
     'CREATE INDEX IF NOT EXISTS idx_electors_part_gender ON voterdb.electors (part_no, gender)',
     'CREATE INDEX IF NOT EXISTS idx_outreach_elector_created ON public.outreach (elector_id, created_at DESC)',
+
+    // Phone numbers are matched to voters by Voter ID (EPIC), so exact lookups by EPIC must be instant; phones are searchable.
+    'CREATE INDEX IF NOT EXISTS idx_electors_epic ON voterdb.electors (epic)',
+    'CREATE INDEX IF NOT EXISTS idx_electors_phone_trgm ON voterdb.electors USING gin (phone gin_trgm_ops)',
 
     // Search box: section (road) name too.
     'CREATE INDEX IF NOT EXISTS idx_electors_section_trgm ON voterdb.electors USING gin (section_name gin_trgm_ops)',

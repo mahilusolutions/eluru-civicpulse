@@ -110,6 +110,7 @@ export default function DataPage() {
   const list = useMemo(() => files || [], [files]);
 
   const [uploading, setUploading] = useState(false);
+  const [queue, setQueue] = useState([]); // one row per PDF picked: waiting / uploading / done / error
   const [importPart, setImportPart] = useState('');
   const [message, setMessage] = useState('');
   const [busyId, setBusyId] = useState(null);
@@ -152,23 +153,51 @@ export default function DataPage() {
   const rows = filtered.slice((safePage - 1) * pageSize, safePage * pageSize);
   const paging = { page: safePage, pageCount, from: filtered.length ? (safePage - 1) * pageSize + 1 : 0, to: Math.min(safePage * pageSize, filtered.length), total: filtered.length, pageSize, onPageChange: setPage, onPageSizeChange: setPageSize };
 
+  const patchRow = useCallback((id, changes) => setQueue((rows) => rows.map((r) => (r.id === id ? { ...r, ...changes } : r))), []);
+
+  // Several PDFs at once: sent one after another so each stays under the server's 50 MB request limit.
   const onUploadPdf = useCallback(
     async (picked) => {
-      const file = picked?.[0];
-      if (!file) return;
+      const chosen = Array.from(picked || []);
+      if (!chosen.length) return;
+      const seen = new Set();
+      const rows = chosen.map((file, i) => {
+        const id = `${Date.now()}-${i}`;
+        const isPdf = /\.pdf$/i.test(file.name) || file.type === 'application/pdf';
+        const dup = seen.has(file.name);
+        seen.add(file.name);
+        let status = 'waiting';
+        let problem = '';
+        if (!isPdf) [status, problem] = ['error', 'Not a PDF file'];
+        else if (dup) [status, problem] = ['error', 'Same file chosen twice'];
+        else if (file.size > 50 * 1024 * 1024) [status, problem] = ['error', 'Larger than 50 MB'];
+        return { id, file, name: file.name, size: file.size, status, pct: 0, problem };
+      });
+      setQueue(rows);
       setUploading(true);
       setMessage('');
-      try {
-        const result = await uploadRollPdf(file);
-        setMessage(`Booth ${result.part_no ?? '?'} uploaded. Reading will start shortly.`);
-        setTimeout(() => reload({ silent: true }), 800);
-      } catch (err) {
-        setMessage(err.message);
-      } finally {
-        setUploading(false);
+      let done = 0;
+      for (const row of rows) {
+        if (row.status !== 'waiting') continue;
+        patchRow(row.id, { status: 'uploading', pct: 0 });
+        try {
+          const result = await uploadRollPdf(row.file, (pct) => patchRow(row.id, { pct }));
+          done += 1;
+          patchRow(row.id, { status: 'done', pct: 100, part_no: result?.part_no });
+        } catch (err) {
+          patchRow(row.id, { status: 'error', problem: err.message || 'Upload failed' });
+        }
       }
+      setUploading(false);
+      const failed = rows.length - done;
+      setMessage(
+        done
+          ? `${done} voter list${done === 1 ? '' : 's'} uploaded. Reading starts automatically, one file at a time.${failed ? ` ${failed} could not be uploaded.` : ''}`
+          : 'No files were uploaded.'
+      );
+      setTimeout(() => reload({ silent: true }), 800);
     },
-    [reload]
+    [patchRow, reload]
   );
 
   const onImportSheet = useCallback(
@@ -327,7 +356,7 @@ export default function DataPage() {
       />
 
       <div className="grid gap-3 lg:grid-cols-2">
-        <FileDropzone accept="application/pdf,.pdf" busy={uploading} onFiles={onUploadPdf} title="Drop a voter list PDF here" hint="We read every page and fill in the voter details" />
+        <FileDropzone accept="application/pdf,.pdf" multiple busy={uploading} onFiles={onUploadPdf} title="Drop voter list PDFs here, one or many" hint="Choose several files at once. We read every page and fill in the voter details" />
         <div className="space-y-2 rounded-2xl border border-[var(--line)] bg-[var(--bg-elevated)] p-3 shadow-soft">
           <div className="flex items-center justify-between gap-3">
             <p className="text-sm font-bold text-[var(--ink)]">Add voters from a spreadsheet</p>
@@ -339,6 +368,48 @@ export default function DataPage() {
 
       <AlertBanner tone="info">{message}</AlertBanner>
       <AlertBanner tone="danger">{error}</AlertBanner>
+
+      {queue.length ? (
+        <div className="rounded-2xl border border-[var(--line)] bg-[var(--bg-elevated)] p-3 shadow-soft">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <p className="text-sm font-bold text-[var(--ink)]">
+              Uploading {queue.length} file{queue.length === 1 ? '' : 's'} ·{' '}
+              <span className="font-semibold text-[var(--muted)]">
+                {queue.filter((r) => r.status === 'done').length} done
+                {queue.some((r) => r.status === 'error') ? `, ${queue.filter((r) => r.status === 'error').length} failed` : ''}
+              </span>
+            </p>
+            {!uploading ? (
+              <button type="button" onClick={() => setQueue([])} className="text-xs font-semibold text-[var(--muted)] hover:text-[var(--ink)]">
+                Clear list
+              </button>
+            ) : null}
+          </div>
+          <ul className="divide-y divide-[var(--line)]">
+            {queue.map((r) => (
+              <li key={r.id} className="flex items-center gap-3 py-2">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold text-[var(--ink)]" title={r.name}>
+                    {r.name}
+                  </p>
+                  <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-[var(--viz-track)]">
+                    <span
+                      className="block h-full rounded-full transition-all"
+                      style={{ width: `${r.status === 'error' ? 100 : r.pct}%`, background: r.status === 'error' ? '#d64545' : 'var(--brand)' }}
+                    />
+                  </div>
+                </div>
+                <span className="w-44 shrink-0 text-right text-xs text-[var(--muted)]">
+                  {r.status === 'waiting' ? 'Waiting…' : null}
+                  {r.status === 'uploading' ? `Uploading ${r.pct}%` : null}
+                  {r.status === 'done' ? `Uploaded${r.part_no ? ` · booth ${r.part_no}` : ''}` : null}
+                  {r.status === 'error' ? <span className="font-semibold text-[#d64545]">{r.problem}</span> : null}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       <FilterPanel search={query} onSearch={setQuery} placeholder="Search booth number or file name…" chips={chips} onClearAll={() => { setQuery(''); setStatusFilter('all'); }} cols="md:grid-cols-4">
         <FilterField label="Status" className="col-span-2 md:col-span-1">

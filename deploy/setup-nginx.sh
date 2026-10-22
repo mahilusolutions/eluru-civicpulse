@@ -25,5 +25,13 @@ nginx -t
 systemctl enable --now nginx
 systemctl reload nginx
 
+# The template above is plain HTTP. If a Let's Encrypt certificate already exists, put HTTPS back,
+# otherwise every deploy would switch the site to HTTP only and https:// would stop loading.
+DOMAIN="$(grep -m1 -oP 'server_name\s+\K[^\s;_]+' "$NGINX_SRC" || true)"
+if [[ -n "$DOMAIN" && -d "/etc/letsencrypt/live/$DOMAIN" ]] && command -v certbot >/dev/null 2>&1; then
+  certbot --nginx -d "$DOMAIN" --reinstall --redirect --non-interactive --no-eff-email
+  nginx -t && systemctl reload nginx
+fi
+
 echo "Nginx site installed: $NGINX_AVAIL"
 echo "Reload done. Point DNS here, then: certbot --nginx -d your.domain.com"

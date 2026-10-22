@@ -37,6 +37,36 @@ const PDFTOPPM =
     return 'pdftoppm';
   })();
 
+// ---- Language (English rolls, or Telugu rolls whose card text is Telugu) ----
+const TESSDATA_DIR = process.env.TESSDATA_DIR || path.join(__dirname, '..', 'tessdata');
+let telChoice; // cached: null (not installed) or the extra tesseract args to use
+
+/** Telugu rolls are named ...-TEL-<part>.pdf; English ones ...-ENG-<part>-WI.pdf. */
+function langForFile(file) {
+  return /[-_]TEL[-_]\d+/i.test(path.basename(String(file || ''))) ? 'tel' : 'eng';
+}
+
+/** tesseract args for a language: Telugu needs its language pack (system-wide, or the bundled tessdata folder). */
+function tessLangArgs(lang) {
+  if (lang !== 'tel') return ['-l', 'eng'];
+  if (telChoice === undefined) {
+    const { spawnSync } = require('child_process');
+    const has = (args) => {
+      const r = spawnSync(TESSERACT, [...args, '--list-langs'], { encoding: 'utf8', windowsHide: true });
+      const langs = String(r.stdout || '').split(/\r?\n/).map((l) => l.trim());
+      return langs.includes('tel') && langs.includes('eng');
+    };
+    if (fs.existsSync(path.join(TESSDATA_DIR, 'tel.traineddata')) && has(['--tessdata-dir', TESSDATA_DIR])) {
+      telChoice = ['--tessdata-dir', TESSDATA_DIR, '-l', 'tel+eng']; // bundled model (tessdata_best)
+    } else if (has([])) telChoice = ['-l', 'tel+eng'];
+    else telChoice = null;
+  }
+  if (!telChoice) {
+    throw new Error('Telugu language pack is not installed. Install it (Linux: apt install tesseract-ocr-tel) or put tel.traineddata and eng.traineddata in ' + TESSDATA_DIR);
+  }
+  return telChoice;
+}
+
 function isJunkElectorName(n) {
   if (!n) return true;
   const s = String(n).trim();
@@ -258,8 +288,92 @@ function parseAgeDigits(raw) {
   return Number.isInteger(age) && age >= 18 && age <= 120 ? age : null;
 }
 
+const TELUGU_LABEL = /ఓటరు|వయస్సు|లింగము|ఇంటి\s*సంఖ్య/u;
+const TELUGU_RELATION = { తండ్రి: 'father', భర్త: 'husband', తల్లి: 'mother', ఇతరుల: 'other' };
+
+/** Keep Telugu and Latin letters only; drop stray marks picked up from the photo frame and card border. */
+function cleanTeluguName(raw) {
+  const kept = String(raw || '')
+    .replace(/[^\u0C00-\u0C7FA-Za-z.\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const tokens = kept.split(' ').filter(Boolean);
+  while (tokens.length && /^[A-Za-z.]{1,2}$/.test(tokens[tokens.length - 1]) && tokens.length > 1) tokens.pop();
+  const name = tokens.join(' ').trim();
+  return name.length >= 2 ? name.slice(0, 120) : null;
+}
+
+/** Card text of a Telugu roll: ఓటరు పేరు (name), తండ్రి/భర్త పేరు (relative), ఇంటి సంఖ్య (house), వయస్సు (age), లింగము (gender). */
+function parseTeluguCardBody(body, partNo, serial, meta = {}) {
+  const flat = String(body || '').replace(/\r/g, '').replace(/[|]/g, ' ').split('\n').map((l) => l.trim()).filter(Boolean).join(' ');
+  if (!flat) return null;
+
+  const nameMatch = flat.match(/ఓటరు\s*పేరు\s*[:;=.]?\s*(.+?)(?=\s*\S{0,6}\s*పేరు\s*[:;=]|\s*ఇంటి\s*సంఖ్య|\s*వయస్సు|$)/u);
+  let nameRaw = nameMatch ? nameMatch[1] : null;
+  if (!nameRaw) {
+    // The "voter" label was misread: the first "... పేరు :" on the card is still the voter's own name.
+    const lead = flat.match(/పేరు\s*[:;=.]?\s*(.+?)(?=\s*\S{0,6}\s*పేరు\s*[:;=]|\s*ఇంటి\s*సంఖ్య|\s*వయస్సు|$)/u);
+    nameRaw = lead ? lead[1] : null;
+  }
+  const name = cleanTeluguName(nameRaw);
+  if (!name) return null;
+
+  let relation_type = 'other';
+  let relation_name = null;
+  const after = nameMatch ? flat.slice(nameMatch.index + nameMatch[0].length) : flat.replace(/^.*?పేరు[^]*?(?=\S{0,6}\s*పేరు\s*[:;=])/u, '');
+  const relMatch = after.match(/(\S{0,6})\s*పేరు\s*[:;=]\s*(.+?)(?=\s*ఇంటి|\s*వయస్సు|$)/u);
+  if (relMatch) {
+    const label = relMatch[1];
+    const key = Object.keys(TELUGU_RELATION).find((k) => label.includes(k) || k.includes(label.replace(/[^\u0C00-\u0C7F]/g, '')) && label.length > 2);
+    relation_type = key ? TELUGU_RELATION[key] : 'other';
+    relation_name = cleanTeluguName(relMatch[2]);
+  }
+
+  let house_no = null;
+  const houseMatch = flat.match(/ఇంటి\s*సంఖ్య\s*[:;=]?\s*(.+?)(?=\s*వయస్సు|$)/u);
+  if (houseMatch) {
+    const h = houseMatch[1].replace(/\s+/g, ' ').replace(/[^\u0C00-\u0C7F0-9A-Za-z\-\/.,() ]/g, '').trim();
+    // Drop 1-2 character leftovers (photo frame, border) that follow the number.
+    const parts = h.split(' ').filter(Boolean);
+    while (parts.length > 1 && parts[parts.length - 1].length <= 2) parts.pop();
+    house_no = parts.length ? parts.join(' ').slice(0, 60) : null;
+  }
+
+  let age = null;
+  const a = flat.match(/వయస్సు\s*[:;=]?\s*([0-9\/>IlOS|]{1,4})/u);
+  if (a) age = parseAgeDigits(a[1]);
+
+  let gender = null;
+  const g = flat.match(/లింగము\s*[:;=]?\s*(\S+)/u);
+  if (g) {
+    const v = g[1];
+    if (/^పు/u.test(v) || /^(M|Male)\b/i.test(v)) gender = 'M';
+    else if (/ఇత/u.test(v)) gender = 'O';
+    else if (/[\u0C00-\u0C7F]{2,}/u.test(v) || /^(F|Female)\b/i.test(v)) gender = 'F'; // స్త్రీ, however the marks were read
+  }
+
+  return {
+    part_no: partNo,
+    serial_no: serial,
+    epic: null,
+    name,
+    relation_type,
+    relation_name,
+    house_no,
+    age,
+    gender,
+    page_no: meta.page_no || null,
+    section_no: meta.section_no || null,
+    section_name: meta.section_name || null,
+    ac_name: meta.ac_name || null,
+    status: 'active',
+    raw_ocr_text: null,
+  };
+}
+
 /** Parse the text block of one voter card (read on its own, so nothing is interleaved). */
 function parseCardBody(body, partNo, serial, meta = {}) {
+  if (TELUGU_LABEL.test(String(body || ''))) return parseTeluguCardBody(body, partNo, serial, meta);
   const flat = String(body || '')
     .replace(/\r/g, '')
     .replace(/ /g, ' ')
@@ -430,7 +544,7 @@ async function mapPool(items, concurrency, fn) {
 }
 
 function partFromFilename(name) {
-  const m = name.match(/-ENG-(\d+)-WI/i) || name.match(/part[-_]?(\d+)/i);
+  const m = name.match(/-(?:ENG|TEL)-(\d+)(?:-WI)?/i) || name.match(/part[-_]?(\d+)/i);
   return m ? Number(m[1]) : null;
 }
 
@@ -503,6 +617,8 @@ async function ocrPdfToVoters(pdfPath, partNo, opts = {}) {
   } = opts;
 
   const keepImages = process.env.OCR_KEEP_IMAGES !== '0' && Boolean(imageDir);
+  const lang = opts.lang || langForFile(pdfPath);
+  const langArgs = tessLangArgs(lang);
 
   if (!fs.existsSync(pdfPath)) throw new Error(`PDF not found: ${pdfPath}`);
 
@@ -531,7 +647,7 @@ async function ocrPdfToVoters(pdfPath, partNo, opts = {}) {
       const pageTexts = await mapPool(pageFiles, pageWorkers, async (pageFile, i) => {
         const imgPath = path.join(tmpRoot, pageFile);
         const outBase = path.join(tmpRoot, `ocr-${i + 1}`);
-        await runAsync(TESSERACT, [imgPath, outBase, '-l', 'eng', '--psm', '6']);
+        await runAsync(TESSERACT, [imgPath, outBase, ...langArgs, '--psm', '6']);
         const pageText = fs.existsSync(`${outBase}.txt`)
           ? fs.readFileSync(`${outBase}.txt`, 'utf8')
           : '';
@@ -597,9 +713,9 @@ async function ocrPdfToVoters(pdfPath, partNo, opts = {}) {
           .find((f) => f.startsWith(`p${pageNo}`) && f.endsWith('.png'));
         if (!alt) throw new Error(`No image for page ${pageNo}`);
         imgPath = path.join(tmpRoot, alt);
-        await runAsync(TESSERACT, [imgPath, prefix, '-l', 'eng', '--psm', '6']);
+        await runAsync(TESSERACT, [imgPath, prefix, ...langArgs, '--psm', '6']);
       } else {
-        await runAsync(TESSERACT, [imgPath, prefix, '-l', 'eng', '--psm', '6']);
+        await runAsync(TESSERACT, [imgPath, prefix, ...langArgs, '--psm', '6']);
       }
       const pageText = fs.existsSync(`${prefix}.txt`)
         ? fs.readFileSync(`${prefix}.txt`, 'utf8')
@@ -615,7 +731,8 @@ async function ocrPdfToVoters(pdfPath, partNo, opts = {}) {
       const etaSeconds = Math.round((elapsed / finished) * (pageNos.length - finished));
       // Voter pages: read every card on its own (serial + Voter ID + details together).
       let cards = null;
-      if (process.env.OCR_CARD_READER !== '0' && /Section\s*No\s*and\s*Name/i.test(pageText)) {
+      const isVoterPage = lang === 'tel' ? /ఓటరు\s*పేరు|విభాగం\s*సంఖ్య/u.test(pageText) || (pageText.match(/[A-Z]{3}\d{7}/g) || []).length >= 3 : /Section\s*No\s*and\s*Name/i.test(pageText);
+      if (process.env.OCR_CARD_READER !== '0' && isVoterPage) {
         try {
           cards = await readCardHeaders({
             pdfPath,
@@ -624,6 +741,9 @@ async function ocrPdfToVoters(pdfPath, partNo, opts = {}) {
             tesseract: TESSERACT,
             tmpDir: tmpRoot,
             bodies: true,
+            bodyLangArgs: langArgs,
+            readAloneOnly: lang === 'tel',
+            ...(lang === 'tel' ? { bodyBox: { x0: 6, x1: 330, y0: 26, y1: 176 } } : {}),
           });
         } catch (err) {
           console.warn(`Card reader failed on page ${pageNo}: ${err.message} (using page text)`);
@@ -671,6 +791,9 @@ module.exports = {
   parseRollCover,
   ocrPdfToVoters,
   partFromFilename,
+  langForFile,
+  tessLangArgs,
+  parseCardBody,
   TESSERACT,
   PDFTOPPM,
 };

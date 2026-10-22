@@ -159,6 +159,13 @@ async function main() {
     `${REMOTE}/eluru_voters_data_ocr_extraction/code`
   );
 
+  console.log('Uploading Telugu/English OCR language data …');
+  await uploadDir(
+    sftp,
+    path.join(ROOT, 'eluru_voters_data_ocr_extraction', 'tessdata'),
+    `${REMOTE}/eluru_voters_data_ocr_extraction/tessdata`
+  );
+
   console.log('Uploading civicpulse/src + public + package files …');
   await uploadDir(sftp, path.join(ROOT, 'civicpulse'), `${REMOTE}/civicpulse`, (rel) => {
     if (rel.startsWith('node_modules')) return false;

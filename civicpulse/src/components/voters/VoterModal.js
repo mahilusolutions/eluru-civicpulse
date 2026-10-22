@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, History, Home, MapPin, Pencil, Trash2, X } from 'lucide-react';
+import { AlertTriangle, History, Home, MapPin, Pencil, X } from 'lucide-react';
 import { apiAssetUrl } from '../../api/baseUrl';
-import { deleteVoter, getVoter, getVoterHistory, updateVoter } from '../../api/voters';
+import { getVoter, getVoterHistory, updateVoter } from '../../api/voters';
 import { useAuth } from '../../auth/AuthContext';
 import { ROLES, ROLE_LABELS } from '../../auth/roles';
 import { btnPrimary, inputClass } from '../ui/Panel';
@@ -155,40 +155,6 @@ function EditForm({ voter, role, onCancel, onSaved }) {
   );
 }
 
-function DeletePanel({ voter, role, onCancel, onDeleted }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  async function remove() {
-    setBusy(true);
-    setError('');
-    try {
-      await deleteVoter(voter.id, role);
-      onDeleted();
-    } catch (err) {
-      setError(err.message);
-      setBusy(false);
-    }
-  }
-  const contacts = voter.outreach?.length || 0;
-  return (
-    <div className="space-y-3 rounded-xl border border-red-200 bg-red-50/60 p-4">
-      {error ? <p className="text-sm text-red-700">{error}</p> : null}
-      <p className="text-sm font-bold text-[var(--ink)]">Delete {niceName(voter.name)} from the voter list?</p>
-      <p className="text-sm text-[var(--ink-soft)]">
-        They will be removed from the list and from all counts{contacts ? `, along with ${contacts} logged contact${contacts === 1 ? '' : 's'}` : ''}. A full copy is kept in the history log. If they only moved away or passed on, change their <span className="font-semibold">Status</span> with Edit instead.
-      </p>
-      <div className="flex justify-end gap-2">
-        <button type="button" onClick={onCancel} className="rounded-xl px-3 py-2 text-xs font-semibold text-[var(--muted)] hover:text-[var(--ink)]">
-          Keep voter
-        </button>
-        <button type="button" onClick={remove} disabled={busy} className={`${btnPrimary} !bg-red-600 !py-2`}>
-          {busy ? 'Deleting…' : 'Yes, delete'}
-        </button>
-      </div>
-    </div>
-  );
-}
-
 function HistoryPanel({ id }) {
   const [events, setEvents] = useState(null);
   const [error, setError] = useState('');
@@ -226,7 +192,6 @@ function HistoryPanel({ id }) {
 export default function VoterModal({ id, onClose, onSelect, onChanged }) {
   const { role } = useAuth();
   const canEdit = role !== ROLES.VIEWER && role !== ROLES.VOLUNTEER;
-  const canDelete = [ROLES.SUPER_ADMIN, ROLES.ADMIN].includes(role);
   const [mode, setMode] = useState('view');
   const [reloadKey, setReloadKey] = useState(0);
   const [voter, setVoter] = useState(null);
@@ -313,11 +278,6 @@ export default function VoterModal({ id, onClose, onSelect, onChanged }) {
                   <Pencil className="h-[18px] w-[18px]" />
                 </button>
               ) : null}
-              {canDelete ? (
-                <button type="button" onClick={() => setMode('delete')} title="Delete" aria-label="Delete" className="rounded-lg p-1.5 text-[var(--muted)] transition hover:bg-red-50 hover:text-red-600">
-                  <Trash2 className="h-[18px] w-[18px]" />
-                </button>
-              ) : null}
             </div>
           ) : null}
           <button
@@ -344,17 +304,6 @@ export default function VoterModal({ id, onClose, onSelect, onChanged }) {
                 setMode('view');
                 setReloadKey((k) => k + 1);
                 onChanged?.();
-              }}
-            />
-          ) : null}
-          {voter && mode === 'delete' ? (
-            <DeletePanel
-              voter={voter}
-              role={role}
-              onCancel={() => setMode('view')}
-              onDeleted={() => {
-                onChanged?.();
-                onClose();
               }}
             />
           ) : null}

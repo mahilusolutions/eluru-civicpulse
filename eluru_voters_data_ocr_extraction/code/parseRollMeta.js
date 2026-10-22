@@ -14,10 +14,10 @@ function parsePageMeta(pageText) {
   const acMatch = text.match(
     /Assembly\s*Constituency\s*No\s*and\s*Name\s*:?\s*([^\n]+?)(?=\s*Part\s*Number|$)/i
   );
-  const partMatch = text.match(/Part\s*Number\s*:?\s*(\d+)/i);
-  const secMatch = text.match(
-    /Section\s*No\s*and\s*Name\s*:?\s*(\d+)\s*[-–]\s*([^\n\r]+)/i
-  );
+  const partMatch = text.match(/Part\s*Number\s*:?\s*(\d+)/i) || text.match(/భాగం\s*సంఖ్య\s*[:;]*\s*(\d+)/u);
+  const secMatch =
+    text.match(/Section\s*No\s*and\s*Name\s*:?\s*(\d+)\s*[-–]\s*([^\n\r]+)/i) ||
+    text.match(/విభాగం\s*సంఖ్య\s*మరియు\s*పేరు\s*[:;]*\s*(\d+)\s*[-–]\s*([^\n\r]+)/u);
   let section_name = secMatch ? cleanLine(secMatch[2]) : null;
   if (section_name) {
     section_name = section_name

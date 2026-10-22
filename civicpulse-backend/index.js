@@ -498,8 +498,8 @@ function voterWhere(query = {}, omit = null) {
     const serial = /^\d{1,7}$/.test(q) ? Number(q) : null;
     c.push(
       serial != null
-        ? Prisma.sql`(name ILIKE ${like} OR epic ILIKE ${like} OR house_no ILIKE ${like} OR relation_name ILIKE ${like} OR section_name ILIKE ${like} OR serial_no = ${serial})`
-        : Prisma.sql`(name ILIKE ${like} OR epic ILIKE ${like} OR house_no ILIKE ${like} OR relation_name ILIKE ${like} OR section_name ILIKE ${like})`
+        ? Prisma.sql`(name ILIKE ${like} OR epic ILIKE ${like} OR house_no ILIKE ${like} OR relation_name ILIKE ${like} OR section_name ILIKE ${like} OR phone ILIKE ${like} OR serial_no = ${serial})`
+        : Prisma.sql`(name ILIKE ${like} OR epic ILIKE ${like} OR house_no ILIKE ${like} OR relation_name ILIKE ${like} OR section_name ILIKE ${like} OR phone ILIKE ${like})`
     );
   }
   return Prisma.sql`WHERE ${Prisma.join(c, ' AND ')}`;
@@ -964,28 +964,6 @@ app.patch(
       });
     }
     ok(res, voter);
-  })
-);
-
-// Removing a voter also removes their logged contacts; a full copy is kept in the history log.
-app.delete(
-  '/api/voters/:id',
-  asyncHandler(async (req, res) => {
-    const id = BigInt(req.params.id);
-    const existing = await prisma.elector.findUnique({ where: { id } });
-    if (!existing) return fail(res, 404, 'Voter not found');
-    const contacts = await prisma.outreach.count({ where: { electorId: id } });
-    const { rawOcrText, rawJson, ...snapshot } = existing;
-    await prisma.elector.delete({ where: { id } });
-    await logAudit(prisma, {
-      entity: 'voter',
-      entityId: id,
-      action: 'delete',
-      actorRole: req.query.actor_role,
-      summary: `Deleted voter ${existing.name} (booth ${existing.partNo}, no. ${existing.serialNo})${contacts ? ` and ${contacts} logged contact(s)` : ''}`,
-      before: snapshot,
-    });
-    ok(res, { id: String(id), contacts_removed: contacts });
   })
 );
 

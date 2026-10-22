@@ -149,7 +149,7 @@ function repairSerial(raw) {
  * @returns {Promise<Array<{slot:number, serial:number|null, epic:string|null, raw:string}>>}
  *   one entry per card found on the page, in reading order.
  */
-async function readCardHeaders({ pdfPath, pageNo, pdftoppm, tesseract, dpi = 300, tmpDir, bodies = false }) {
+async function readCardHeaders({ pdfPath, pageNo, pdftoppm, tesseract, dpi = 300, tmpDir, bodies = false, bodyLangArgs = ['-l', 'eng'], readAloneOnly = false, bodyBox = BODY_BOX }) {
   const work = fs.mkdtempSync(path.join(tmpDir || os.tmpdir(), 'cards-'));
   try {
     const prefix = path.join(work, 'page');
@@ -173,7 +173,7 @@ async function readCardHeaders({ pdfPath, pageNo, pdftoppm, tesseract, dpi = 300
         const serial = cropBox(img, sb.left, sb.top, sb.w, sb.h);
         // An empty slot (no card on this page) has almost no ink.
         if (epic.dark < 60 && serial.dark < 20) continue;
-        const bb = box(BODY_BOX);
+        const bb = box(bodyBox);
         rows.push({ slot: r * COLS + c, serial, epic, body: bodies ? cropBox(img, bb.left, bb.top, bb.w, bb.h) : null });
       }
     }
@@ -222,7 +222,7 @@ async function readCardHeaders({ pdfPath, pageNo, pdftoppm, tesseract, dpi = 300
       lines.length !== rows.length
         ? await readOneByOne(rows, { work, tesseract, dpi })
         : finishCards(rows.map((row, i) => parseLine(row.slot, lines[i])));
-    if (bodies) await attachBodies(cards, rows, { work, tesseract, dpi });
+    if (bodies) await attachBodies(cards, rows, { work, tesseract, dpi, bodyLangArgs, readAloneOnly });
     return cards;
   } finally {
     fs.rmSync(work, { recursive: true, force: true });
@@ -234,7 +234,7 @@ async function readCardHeaders({ pdfPath, pageNo, pdftoppm, tesseract, dpi = 300
  * cut out on its own, so the three columns of the page can no longer run into each other.
  * The serial crop is stacked above each body so the output can be split back into cards.
  */
-async function attachBodies(cards, rows, { work, tesseract, dpi }) {
+async function attachBodies(cards, rows, { work, tesseract, dpi, bodyLangArgs = ['-l', 'eng'], readAloneOnly = false }) {
   const pad = 24;
   const gap = 60;
   const W = Math.max(...rows.map((r) => r.body.w), ...rows.map((r) => r.serial.w)) + pad * 2;
@@ -254,7 +254,29 @@ async function attachBodies(cards, rows, { work, tesseract, dpi }) {
   });
   const file = path.join(work, 'bodies.pgm');
   writePgm(file, W, H, canvas);
-  const text = await run(tesseract, [file, 'stdout', '--psm', '6', '--dpi', String(dpi), '-l', 'eng']);
+  // Telugu cards are read one at a time: the stacked read mixes scripts and can lose the card boundaries.
+  if (readAloneOnly) {
+    for (let i = 0; i < rows.length; i += 1) {
+      const one = path.join(work, `body-${rows[i].slot}.pgm`);
+      writePgm(one, rows[i].body.w, rows[i].body.h, rows[i].body.data);
+      let t = (await run(tesseract, [one, 'stdout', '--psm', '6', '--dpi', String(dpi), ...bodyLangArgs])).trim();
+      // Telugu cards: line 2 holds the relative's name. When it was lost, read that strip alone.
+      if (!/పేరు[\s\S]*పేరు/u.test(t)) {
+        const b = rows[i].body;
+        const top = Math.floor(b.h * 0.11);
+        const sh = Math.floor(b.h * 0.13);
+        const strip = Buffer.alloc(b.w * sh);
+        b.data.copy(strip, 0, top * b.w, (top + sh) * b.w);
+        const sf = path.join(work, `rel-${rows[i].slot}.pgm`);
+        writePgm(sf, b.w, sh, strip);
+        const line = (await run(tesseract, [sf, 'stdout', '--psm', '7', '--dpi', String(dpi), ...bodyLangArgs])).trim();
+        if (/పేరు/u.test(line)) t = t.replace(/(.*ఓటరు[^\n]*)/u, '$1\n' + line);
+      }
+      cards[i].body_text = t;
+    }
+    return;
+  }
+  const text = await run(tesseract, [file, 'stdout', '--psm', '6', '--dpi', String(dpi), ...bodyLangArgs]);
 
   // A line holding only the serial number starts a new card.
   const chunks = [];
@@ -265,7 +287,7 @@ async function attachBodies(cards, rows, { work, tesseract, dpi }) {
   const readAlone = async (i) => {
     const one = path.join(work, `body-${rows[i].slot}.pgm`);
     writePgm(one, rows[i].body.w, rows[i].body.h, rows[i].body.data);
-    const t = await run(tesseract, [one, 'stdout', '--psm', '6', '--dpi', String(dpi), '-l', 'eng']);
+    const t = await run(tesseract, [one, 'stdout', '--psm', '6', '--dpi', String(dpi), ...bodyLangArgs]);
     cards[i].body_text = t.trim();
   };
 
@@ -287,10 +309,12 @@ async function attachBodies(cards, rows, { work, tesseract, dpi }) {
 function parseLine(slot, line) {
   const tokens = String(line).split(/\s+/).filter(Boolean);
   // The serial is the leading short token; the Voter ID is the longest remaining token.
-  const serial = repairSerial(tokens[0]);
-  const rest = tokens.slice(1).sort((a, b) => b.length - a.length);
+  // A single long token is the Voter ID with the serial box unread; otherwise the first token is the serial.
+  const lone = tokens.length === 1 && tokens[0].length >= 8;
+  const serial = lone ? null : repairSerial(tokens[0]);
+  const rest = (lone ? tokens : tokens.slice(1)).sort((a, b) => b.length - a.length);
   const epic = /^[A-Z]{3}\d{7}$/.test(rest[0] || '') ? rest[0] : null;
-  return { slot, serial, epic, raw: line, tokens: tokens.slice(1) };
+  return { slot, serial, epic, raw: line, tokens: lone ? tokens : tokens.slice(1) };
 }
 
 /** Learn the prefixes seen cleanly on this page, then repair the noisy ones. */
