@@ -899,3 +899,9 @@
   width: 0;
   height: 0;
 }
+
+/* Password boxes show our own eye button; hide the one Edge adds so there are not two. */
+input[type='password']::-ms-reveal,
+input[type='password']::-ms-clear {
+  display: none;
+}
