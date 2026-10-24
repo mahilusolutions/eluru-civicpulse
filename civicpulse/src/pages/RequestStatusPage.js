@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { AlertTriangle, ArrowRight, Check, ClipboardCopy, Clock, Download, KeyRound, Loader2, Search, ShieldAlert, X } from 'lucide-react';
+import { AlertTriangle, ArrowRight, Check, ClipboardCopy, Clock, Download, FileSearch, KeyRound, Loader2, Search, ShieldAlert, X } from 'lucide-react';
 import { checkRequestStatus, collectCredentials, downloadAcknowledgement } from '../api/access';
 import AuthLayout from '../components/auth/AuthLayout';
 import AlertBanner from '../components/ui/AlertBanner';
 import { inputClass } from '../components/ui/Panel';
 import { saveBlob, savePdfBase64 } from '../utils/download';
+import { formatReference, mobileDigits } from '../utils/inputFilters';
 
 const when = (iso) => (iso ? new Date(iso).toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—');
 
@@ -263,9 +264,41 @@ function Result({ data, mobile, onChange }) {
   );
 }
 
+const glass = 'rounded-2xl border border-white/12 bg-white/[0.06] p-5 backdrop-blur';
+
+function StatusAside() {
+  return (
+    <>
+      <div className={glass}>
+        <p className="text-sm font-bold text-white">Where is my reference number?</p>
+        <p className="mt-2 text-sm leading-relaxed text-white/75">
+          It looks like <span className="font-mono font-semibold text-[#F0B429]">CPR-XXXX-XXXX</span>. It is on the PDF receipt you downloaded after sending your request.
+        </p>
+      </div>
+      <div className={glass}>
+        <p className="text-sm font-bold text-white">What you can do here</p>
+        <ul className="mt-3 space-y-2.5 text-sm text-white/75">
+          {['See whether your request is waiting, approved or not approved', 'Read the administrator’s note', 'Download your receipt again', 'Collect your username and password once, after approval'].map((t) => (
+            <li key={t} className="flex gap-2.5">
+              <Check className="mt-0.5 h-4 w-4 shrink-0 text-[#F0B429]" />
+              {t}
+            </li>
+          ))}
+        </ul>
+      </div>
+      <p className="text-sm text-white/70">
+        No request yet?{' '}
+        <Link to="/request-access" className="font-semibold text-[#F0B429] underline-offset-4 hover:underline">
+          Request access
+        </Link>
+      </p>
+    </>
+  );
+}
+
 export default function RequestStatusPage() {
   const [params] = useSearchParams();
-  const [reference, setReference] = useState((params.get('ref') || '').toUpperCase());
+  const [reference, setReference] = useState(formatReference(params.get('ref') || ''));
   const [mobile, setMobile] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -293,9 +326,15 @@ export default function RequestStatusPage() {
   }
 
   return (
-    <AuthLayout title="Check your request status" subtitle="Enter the reference number you received and the mobile number from your request." wide>
-      <div className="rounded-2xl border border-[var(--line)] bg-[var(--bg-elevated)] p-5 shadow-soft sm:p-8">
-        {data ? (
+    <AuthLayout
+      layout="split"
+      icon={FileSearch}
+      title="Check your request status"
+      subtitle="Enter the reference number you received and the mobile number from your request."
+      aside={<StatusAside />}
+    >
+      {data ? (
+        <div className="rounded-3xl border border-[var(--line)] bg-[var(--bg-elevated)] p-6 shadow-soft sm:p-9">
           <Result
             data={data}
             mobile={verifiedMobile}
@@ -304,40 +343,73 @@ export default function RequestStatusPage() {
               setMobile('');
             }}
           />
-        ) : (
-          <form onSubmit={submit} noValidate className="mx-auto max-w-xl">
-            <AlertBanner tone="danger" className="mb-4">{error}</AlertBanner>
-            <label htmlFor="ref" className="mb-1.5 block text-xs font-semibold text-[var(--ink-soft)]">
-              Reference number
-            </label>
-            <input
-              id="ref"
-              value={reference}
-              onChange={(e) => setReference(e.target.value.toUpperCase())}
-              placeholder="CPR-7K3M-9QX2"
-              autoComplete="off"
-              spellCheck={false}
-              maxLength={16}
-              className={`${inputClass} font-mono text-lg font-bold tracking-wider`}
-            />
-            <label htmlFor="mob" className="mb-1.5 mt-4 block text-xs font-semibold text-[var(--ink-soft)]">
-              Mobile number used in the request
-            </label>
-            <input id="mob" value={mobile} onChange={(e) => setMobile(e.target.value)} inputMode="tel" autoComplete="tel" placeholder="98480 12345" maxLength={16} className={inputClass} />
-            <p className="mt-2 text-xs text-[var(--muted)]">Both are needed so only you can see your request and your login.</p>
-            <button type="submit" disabled={busy} className="mt-5 inline-flex items-center gap-2 rounded-xl bg-[var(--brand)] px-5 py-3 text-sm font-bold text-white transition hover:brightness-110 disabled:opacity-60">
-              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-              {busy ? 'Checking…' : 'Check status'}
-            </button>
-            <p className="mt-5 text-sm text-[var(--muted)]">
-              No request yet?{' '}
-              <Link to="/request-access" className="font-semibold text-[var(--brand)] hover:underline">
-                Request access
-              </Link>
-            </p>
+        </div>
+      ) : (
+        <div className="space-y-5">
+          <form onSubmit={submit} noValidate className="rounded-3xl border border-[var(--line)] bg-[var(--bg-elevated)] p-6 shadow-soft sm:p-9">
+            <h2 className="text-lg font-bold tracking-tight">Find your request</h2>
+            <p className="mt-1 text-sm text-[var(--muted)]">Both details are needed so only you can see your request and your login.</p>
+            <AlertBanner tone="danger" className="mt-4">{error}</AlertBanner>
+            <div className="mt-5 grid gap-4 lg:grid-cols-[1fr_1fr_auto] lg:items-end">
+              <div>
+                <label htmlFor="ref" className="mb-1.5 block text-xs font-semibold text-[var(--ink-soft)]">
+                  Reference number
+                </label>
+                <input
+                  id="ref"
+                  value={reference}
+                  onChange={(e) => setReference(formatReference(e.target.value))}
+                  placeholder="Reference number"
+                  autoComplete="off"
+                  spellCheck={false}
+                  maxLength={24}
+                  className={`${inputClass} !py-3 font-semibold tracking-wider`}
+                />
+              </div>
+              <div>
+                <label htmlFor="mob" className="mb-1.5 block text-xs font-semibold text-[var(--ink-soft)]">
+                  Mobile number used in the request
+                </label>
+                <div className="flex">
+                  <span className="inline-flex items-center rounded-l-xl border border-r-0 border-[var(--line)] bg-[var(--bg-muted)] px-3 text-sm font-semibold text-[var(--ink-soft)]">+91</span>
+                  <input id="mob" value={mobile} onChange={(e) => setMobile(mobileDigits(e.target.value))} type="tel" inputMode="numeric" pattern="[0-9]*" autoComplete="tel-national" placeholder="Mobile number" maxLength={16} className={`${inputClass} !rounded-l-none !py-3`} />
+                </div>
+              </div>
+              <button type="submit" disabled={busy} className="inline-flex h-[2.9rem] items-center justify-center gap-2 rounded-xl bg-[var(--brand)] px-7 text-sm font-bold text-white transition hover:brightness-110 disabled:opacity-60">
+                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                {busy ? 'Checking…' : 'Check status'}
+              </button>
+            </div>
           </form>
-        )}
-      </div>
+
+          <ol className="grid gap-4 md:grid-cols-3">
+            {[
+              ['1', 'Sent', 'Your request reaches the Super Admin as soon as you submit the form.'],
+              ['2', 'Under review', 'The administrator reads it and decides. This page shows the current step.'],
+              ['3', 'Collect your login', 'If approved, a button here shows your username and one-time password.'],
+            ].map(([n, t, d]) => (
+              <li key={n} className="rounded-2xl border border-[var(--line)] bg-[var(--bg-elevated)] p-5 shadow-soft">
+                <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-[var(--brand)] text-xs font-bold text-white">{n}</span>
+                <p className="mt-3 text-sm font-bold">{t}</p>
+                <p className="mt-1 text-sm leading-relaxed text-[var(--muted)]">{d}</p>
+              </li>
+            ))}
+          </ol>
+
+          <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-[var(--line)] bg-[var(--bg-elevated)] p-5 shadow-soft">
+            <div>
+              <p className="text-sm font-bold">Lost your login or forgot your password?</p>
+              <p className="mt-1 max-w-2xl text-sm leading-relaxed text-[var(--muted)]">
+                Ask the Super Admin to reset it. You then collect the new temporary password here, the same way as the first time, with your reference number and mobile number.
+              </p>
+            </div>
+            <Link to="/login" className="inline-flex items-center gap-2 rounded-xl border border-[var(--line)] px-4 py-2.5 text-sm font-semibold text-[var(--ink-soft)] transition hover:border-[var(--brand)] hover:text-[var(--brand)]">
+              Go to sign in
+              <ArrowRight className="h-4 w-4" />
+            </Link>
+          </div>
+        </div>
+      )}
     </AuthLayout>
   );
 }

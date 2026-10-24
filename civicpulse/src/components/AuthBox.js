@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { ArrowRight, FileSearch, ShieldCheck, UserPlus } from 'lucide-react';
+import { ArrowRight, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../auth/AuthContext';
 import PasswordField from './auth/PasswordField';
 import AlertBanner from './ui/AlertBanner';
@@ -76,14 +76,14 @@ export default function AuthBox() {
             autoComplete="username"
             autoCapitalize="none"
             spellCheck={false}
-            placeholder="for example ravik.2345"
+            placeholder="Enter your username"
             className={`${inputClass} mb-4`}
           />
 
           <label htmlFor="signin-password" className="mb-1.5 block text-[11px] font-semibold uppercase tracking-[0.08em] text-[var(--muted)]">
             Password
           </label>
-          <PasswordField id="signin-password" value={password} onChange={setPassword} />
+          <PasswordField id="signin-password" value={password} onChange={setPassword} placeholder="Enter your password" />
 
           <button
             type="submit"
@@ -94,16 +94,6 @@ export default function AuthBox() {
             {busy ? null : <ArrowRight className="h-4 w-4" />}
           </button>
 
-          <div className="mt-5 grid gap-2 border-t border-[var(--line)] pt-4 sm:grid-cols-2">
-            <Link to="/request-access" className="inline-flex items-center justify-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2.5 text-sm font-semibold text-[var(--ink-soft)] transition hover:border-[var(--brand)] hover:text-[var(--brand)]">
-              <UserPlus className="h-4 w-4" />
-              Request access
-            </Link>
-            <Link to="/request-status" className="inline-flex items-center justify-center gap-2 rounded-xl border border-[var(--line)] px-3 py-2.5 text-sm font-semibold text-[var(--ink-soft)] transition hover:border-[var(--brand)] hover:text-[var(--brand)]">
-              <FileSearch className="h-4 w-4" />
-              Check request status
-            </Link>
-          </div>
         </>
       )}
 

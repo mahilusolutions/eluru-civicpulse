@@ -126,7 +126,7 @@ describe('request access', () => {
     const pdf = buttonWith('Download acknowledgement');
     expect(pdf).toBeTruthy();
     await click(pdf);
-    expect(accessApi.downloadAcknowledgement).toHaveBeenCalledWith('CPR-7K3M-9QX2', '98480 12345');
+    expect(accessApi.downloadAcknowledgement).toHaveBeenCalledWith('CPR-7K3M-9QX2', '9848012345');
   });
 });
 
@@ -241,5 +241,40 @@ describe('Super Admin: new requests', () => {
     expect(buttonWith('Reject request').disabled).toBe(false);
     await click(buttonWith('Reject request'));
     expect(accessApi.rejectRequest).toHaveBeenCalledWith('7', 'Could not match you to a booth team.');
+  });
+});
+
+describe('input filtering', () => {
+  const { mobileDigits, formatReference, alnumUpper, nameOnly } = require('../utils/inputFilters');
+
+  test('mobile keeps digits only and drops a country prefix', () => {
+    expect(mobileDigits('98a48b0 12345')).toBe('9848012345');
+    expect(mobileDigits('+91 98480 12345')).toBe('9848012345');
+    expect(mobileDigits('098480 12345')).toBe('9848012345');
+    expect(mobileDigits('wofnwieof')).toBe('');
+    expect(mobileDigits('91234567')).toBe('91234567'); // a real number that merely starts with 91 is kept
+  });
+
+  test('reference is formatted as it is typed', () => {
+    expect(formatReference('fohregfnr')).toBe('CPR-FOHR-EGFN');
+    expect(formatReference('cpr 7k3m 9qx2')).toBe('CPR-7K3M-9QX2');
+    expect(formatReference('7k3m')).toBe('CPR-7K3M');
+    expect(formatReference('c')).toBe('C');
+    expect(formatReference('CPR-')).toBe('CPR');
+    expect(formatReference('')).toBe('');
+  });
+
+  test('voter id and name are cleaned', () => {
+    expect(alnumUpper('wio-250 1872!')).toBe('WIO2501872');
+    expect(nameOnly('Ravi 99 Kumar!@')).toBe('Ravi Kumar');
+    expect(nameOnly('గోపిచంద్ Rao')).toBe('గోపిచంద్ Rao');
+  });
+
+  test('typing letters into the mobile box leaves it empty', async () => {
+    await mount(<RequestAccessPage />);
+    await type('#mobile', 'wofnwieof');
+    expect(document.body.querySelector('#mobile').value).toBe('');
+    await type('#mobile', '+91 98480 12345');
+    expect(document.body.querySelector('#mobile').value).toBe('9848012345');
   });
 });

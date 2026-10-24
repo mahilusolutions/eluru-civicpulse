@@ -173,7 +173,7 @@ function AcceptModal({ row, onClose, onDone }) {
       <p className="mt-1.5 text-xs text-[var(--muted)]">{ROLE_DESCRIPTIONS[role]}</p>
 
       <label htmlFor="note" className="mb-1.5 mt-4 block text-xs font-semibold text-[var(--muted)]">Note for the applicant (optional)</label>
-      <textarea id="note" value={note} onChange={(e) => setNote(e.target.value)} rows={3} maxLength={300} placeholder="For example: Please work only on booth 14." className={`${inputClass} resize-y`} />
+      <textarea id="note" value={note} onChange={(e) => setNote(e.target.value)} rows={3} maxLength={300} placeholder="A short message the applicant will see with their login" className={`${inputClass} resize-y`} />
 
       <div className="mt-4 rounded-xl bg-[var(--bg-muted)] p-3 text-xs leading-relaxed text-[var(--muted)]">
         A username (first name + last initial + last 4 digits of the mobile, for example <span className="font-mono font-semibold text-[var(--ink-soft)]">ravik.2345</span>) and a random one-time password are created automatically.
@@ -217,7 +217,7 @@ function RejectModal({ row, onClose, onDone }) {
     >
       <AlertBanner tone="danger">{error}</AlertBanner>
       <label htmlFor="why" className="mb-1.5 block text-xs font-semibold text-[var(--muted)]">Reason (the applicant will see this)</label>
-      <textarea id="why" value={reason} onChange={(e) => setReason(e.target.value)} rows={4} maxLength={300} autoFocus placeholder="For example: We could not match you to a booth team. Please ask your coordinator to recommend you." className={`${inputClass} resize-y`} />
+      <textarea id="why" value={reason} onChange={(e) => setReason(e.target.value)} rows={4} maxLength={300} autoFocus placeholder="Why the request is not approved" className={`${inputClass} resize-y`} />
       <p className="mt-1 text-xs text-[var(--muted)]">{reason.trim().length}/300</p>
     </Modal>
   );
