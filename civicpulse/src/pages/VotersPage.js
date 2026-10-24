@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { apiAssetUrl } from '../api/baseUrl';
 import { useSearchParams } from 'react-router-dom';
 import { AlertTriangle, ArrowDownAZ, ArrowUpAZ, BarChart3, Download, Eye, LayoutGrid, RefreshCw, Search, Table2, X } from 'lucide-react';
 import { getBooths } from '../api/booths';
@@ -85,6 +86,19 @@ function MiniFact({ label, children, className = '' }) {
 }
 
 function Avatar({ voter, size = 'h-8 w-8 text-[11px]' }) {
+  const [broken, setBroken] = useState(false);
+  // Telugu rolls: the real photo from the card. Everyone else (or if the photo cannot be loaded): coloured initials.
+  if (voter.photo_url && !broken) {
+    return (
+      <img
+        src={apiAssetUrl(voter.photo_url)}
+        alt=""
+        loading="lazy"
+        onError={() => setBroken(true)}
+        className={`shrink-0 rounded-full border border-[var(--line)] bg-[var(--bg-muted)] object-cover object-top ${size.split(' ').filter((c) => /^(h|w)-/.test(c)).join(' ')}`}
+      />
+    );
+  }
   return (
     <span
       className={`inline-flex shrink-0 items-center justify-center rounded-full font-bold text-white ${size}`}

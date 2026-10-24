@@ -129,7 +129,47 @@ const storage = multer.diskStorage({
     cb(null, safe || `${Date.now()}.pdf`);
   },
 });
-const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } });
+// A file whose name, or whose booth, is already uploaded (waiting, being read, or done) is refused BEFORE it is written,
+// so an upload can never overwrite a PDF that is being read or add a second copy of a booth.
+const safeUploadName = (original) => path.basename(String(original || '')).replace(/[\\/<>:"|?*\x00-\x1f]/g, '_');
+async function existingUploadMessage(filename) {
+  const meta = parseFilename(filename);
+  const partNo = meta.part_no ?? meta.partNo ?? null;
+  const live = "('queued','ocr','ready','needs_import')";
+  const [same] = await prisma.$queryRawUnsafe(
+    `SELECT filename, part_no, parse_status::text AS s FROM voterdb.roll_files WHERE filename = $1 AND parse_status::text IN ${live} LIMIT 1`,
+    filename
+  );
+  const word = { queued: 'waiting to be read', ocr: 'being read now', ready: 'already read', needs_import: 'already read (needs a check)' };
+  if (same) return `Already uploaded: ${same.filename} (${word[same.s] || same.s}). Use "Read again" on it if it needs reading again.`;
+  if (partNo != null) {
+    const [booth] = await prisma.$queryRawUnsafe(
+      `SELECT filename, parse_status::text AS s FROM voterdb.roll_files WHERE part_no = $1 AND parse_status::text IN ${live} LIMIT 1`,
+      partNo
+    );
+    if (booth) return `Booth ${partNo} is already uploaded as ${booth.filename} (${word[booth.s] || booth.s}).`;
+    const [voters] = await prisma.$queryRaw`SELECT 1 AS x FROM voterdb.electors WHERE part_no = ${partNo} LIMIT 1`;
+    if (voters) return `Booth ${partNo} already has voters saved.`;
+  }
+  return null;
+}
+const upload = multer({
+  storage,
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (!/\.pdf$/i.test(file.originalname || '')) return cb(Object.assign(new Error('Only PDF files can be uploaded.'), { rejected: 400 }));
+    return existingUploadMessage(safeUploadName(file.originalname))
+      .then((msg) => (msg ? cb(Object.assign(new Error(msg), { rejected: 409 })) : cb(null, true)))
+      .catch(cb);
+  },
+});
+const uploadOne = (req, res, next) =>
+  upload.single('file')(req, res, (err) => {
+    if (!err) return next();
+    if (err.rejected) return fail(res, err.rejected, err.message);
+    if (err.code === 'LIMIT_FILE_SIZE') return fail(res, 413, 'This file is larger than 50 MB.');
+    return next(err);
+  });
 
 function ok(res, data) {
   res.json({ success: true, data: serialize(data) });
@@ -278,34 +318,62 @@ app.get(
     const id = BigInt(req.params.id);
     const file = await prisma.rollFile.findUnique({
       where: { id },
-      include: { document: true },
+      include: { document: { select: { id: true, pageCount: true, textLength: true, extractedAt: true, durationMs: true, source: true, mode: true, dpi: true, pageWorkers: true, rawMeta: true } } },
     });
     if (!file) return fail(res, 404, 'File not found');
-    ok(res, file);
+
+    let size_bytes = null;
+    try {
+      const pdf = findRollPdf({ storagePath: file.storagePath, filename: file.filename });
+      if (pdf) size_bytes = fs.statSync(pdf).size;
+    } catch {
+      /* the PDF may have been removed from disk; the details still show */
+    }
+    const stats = file.partNo == null ? null : (
+      await prisma.$queryRaw`
+        SELECT COUNT(*)::int AS voters,
+               COUNT(*) FILTER (WHERE gender = 'M'::voterdb.gender_code)::int AS male,
+               COUNT(*) FILTER (WHERE gender = 'F'::voterdb.gender_code)::int AS female,
+               COUNT(*) FILTER (WHERE epic IS NOT NULL AND epic <> '')::int AS with_epic,
+               COUNT(age)::int AS with_age,
+               COUNT(*) FILTER (WHERE house_no IS NOT NULL AND house_no <> '')::int AS with_house,
+               COUNT(phone)::int AS with_phone,
+               COUNT(DISTINCT house_no) FILTER (WHERE house_no IS NOT NULL AND house_no <> '')::int AS households,
+               COUNT(DISTINCT section_no)::int AS roads,
+               COUNT(DISTINCT page_no)::int AS pages_with_voters,
+               ROUND(AVG(age)::numeric, 1)::float AS avg_age,
+               MIN(serial_no)::int AS first_serial,
+               MAX(serial_no)::int AS last_serial
+        FROM voterdb.electors WHERE part_no = ${file.partNo}`
+    )[0];
+    const booth = file.partNo == null ? null : await prisma.booth.findUnique({ where: { partNo: file.partNo }, select: { pollingStationName: true, pollingStationAddress: true, areaName: true, agentName: true, coordinatorName: true } });
+    const meta = file.document?.rawMeta && typeof file.document.rawMeta === 'object' ? file.document.rawMeta : {};
+    const { rawMeta, ...document } = file.document || {};
+    ok(res, {
+      ...file,
+      document: file.document ? document : null,
+      parse_status: file.parseStatus,
+      part_no: file.partNo,
+      voter_count: file.voterCount,
+      page_count: file.pageCount || file.document?.pageCount || 0,
+      uploaded_at: file.uploadedAt,
+      processed_at: file.processedAt,
+      language: isTeluguRoll(file.filename) ? 'Telugu' : 'English',
+      size_bytes,
+      stats,
+      roll: meta.roll_info || null,
+      booth,
+    });
   })
 );
 
 app.post(
   '/api/data/upload',
-  upload.single('file'),
+  uploadOne,
   asyncHandler(async (req, res) => {
     if (!req.file) return fail(res, 400, 'PDF file required');
     const meta = parseFilename(req.file.originalname);
     const filename = req.file.filename;
-
-    if (meta.partNo != null || meta.part_no != null) {
-      const partNo = meta.part_no ?? meta.partNo;
-      await prisma.booth.upsert({
-        where: { partNo },
-        create: {
-          partNo,
-          areaName: `Part ${partNo}`,
-          pollingStationName: `Polling Station Part ${partNo}`,
-          status: 'pending',
-        },
-        update: {},
-      });
-    }
 
     const row = await prisma.rollFile.upsert({
       where: { filename },
@@ -358,86 +426,6 @@ app.post(
       /* ignore */
     }
     ok(res, { ...updated, parse_status: updated.parseStatus, part_no: updated.partNo });
-  })
-);
-
-app.post(
-  '/api/data/import',
-  asyncHandler(async (req, res) => {
-    const { part_no, voters } = req.body || {};
-    if (!part_no || !Array.isArray(voters) || !voters.length) {
-      return fail(res, 400, 'part_no and voters[] required');
-    }
-    const partNo = Number(part_no);
-    await prisma.booth.upsert({
-      where: { partNo },
-      create: {
-        partNo,
-        areaName: `Part ${partNo}`,
-        pollingStationName: `Polling Station Part ${partNo}`,
-        status: 'pending',
-        voterCount: voters.length,
-      },
-      update: { voterCount: voters.length },
-    });
-
-    let imported = 0;
-    for (let i = 0; i < voters.length; i += 1) {
-      const v = voters[i];
-      if (!v?.name) continue;
-      const serial = Number(v.serial_no || i + 1);
-      await prisma.elector.upsert({
-        where: { partNo_serialNo: { partNo, serialNo: serial } },
-        create: {
-          partNo,
-          serialNo: serial,
-          epic: v.epic || null,
-          name: String(v.name).slice(0, 200),
-          relationType: ['father', 'mother', 'husband', 'other'].includes(
-            String(v.relation_type || '').toLowerCase()
-          )
-            ? String(v.relation_type).toLowerCase()
-            : 'father',
-          relationName: v.relation_name || null,
-          houseNo: v.house_no || null,
-          age: v.age && Number(v.age) >= 18 && Number(v.age) <= 120 ? Number(v.age) : null,
-          gender: ['M', 'F', 'O'].includes(String(v.gender || '').toUpperCase())
-            ? String(v.gender).toUpperCase().slice(0, 1)
-            : 'U',
-          status: 'active',
-          rawJson: v,
-        },
-        update: {
-          epic: v.epic || null,
-          name: String(v.name).slice(0, 200),
-          houseNo: v.house_no || null,
-          age: v.age && Number(v.age) >= 18 && Number(v.age) <= 120 ? Number(v.age) : null,
-          gender: ['M', 'F', 'O'].includes(String(v.gender || '').toUpperCase())
-            ? String(v.gender).toUpperCase().slice(0, 1)
-            : 'U',
-          rawJson: v,
-        },
-      });
-      imported += 1;
-    }
-
-    await prisma.rollFile.upsert({
-      where: { filename: `import-part-${partNo}.csv` },
-      create: {
-        filename: `import-part-${partNo}.csv`,
-        partNo,
-        parseStatus: 'ready',
-        voterCount: imported,
-        processedAt: new Date(),
-      },
-      update: {
-        parseStatus: 'ready',
-        voterCount: imported,
-        processedAt: new Date(),
-      },
-    });
-
-    ok(res, { part_no: partNo, imported });
   })
 );
 
@@ -544,8 +532,17 @@ app.get(
       )} LIMIT ${limit} OFFSET ${offset}`,
       prisma.$queryRaw`SELECT COUNT(*)::int AS n FROM voterdb.electors ${where}`,
     ]);
+    // Rows from a Telugu roll have a photo on their card.
+    const docIds = [...new Set(rows.map((r) => r.document_id).filter((v) => v != null).map(String))];
+    const teluguDocs = new Set();
+    if (docIds.length) {
+      const docs = await prisma.$queryRaw`SELECT id, filename FROM voterdb.extracted_documents WHERE id = ANY(${docIds}::bigint[])`;
+      docs.forEach((d) => {
+        if (isTeluguRoll(d.filename)) teluguDocs.add(String(d.id));
+      });
+    }
     ok(res, {
-      rows: rows.map((r) => ({ ...r, ...houseFields(r.house_no) })),
+      rows: rows.map((r) => ({ ...r, ...houseFields(r.house_no), photo_url: teluguDocs.has(String(r.document_id)) ? `/api/voters/${r.id}/photo` : null })),
       total: totalRows[0].n,
       count: rows.length,
       page: Math.floor(offset / limit) + 1,
@@ -824,7 +821,44 @@ app.get(
 );
 
 // A voter's photo, cut out of their printed card. Telugu rolls print a photo on every card; the English rolls only say "Photo Available".
+// Opening one voter cuts out all 30 photos of that page in one go and keeps them, so lists of voters load instantly afterwards.
 const isTeluguRoll = (filename) => /[-_]TEL[-_]\d+/i.test(String(filename || ''));
+const execFileAsync = require('util').promisify(require('child_process').execFile);
+const photoJobs = new Map(); // "document:page" -> the job cutting that page
+const photoChain = { last: Promise.resolve() }; // one page at a time, so cutting photos never starves the website of CPU
+
+async function cutPagePhotos({ pdfPath, cacheDir, pageNo, firstSerial }) {
+  const sharp = require('sharp');
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const prefix = path.join(cacheDir, `pagetmp-${pageNo}`);
+  await execFileAsync(findPdftoppm(), ['-png', '-r', '200', '-f', String(pageNo), '-l', String(pageNo), '-singlefile', pdfPath, prefix], { windowsHide: true, timeout: 120000 });
+  const png = `${prefix}.png`;
+  try {
+    const { data, info } = await sharp(png).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    const raw = { raw: { width: info.width, height: info.height, channels: info.channels } };
+    for (let slot = 0; slot < 30; slot += 1) {
+      const cardX = (CARD_COL_LEFT[slot % 3] - 0.004) * info.width;
+      const cardY = (CARD_ROW_TOP[Math.floor(slot / 3)] - 0.003) * info.height;
+      const cardW = 0.318 * info.width;
+      const cardH = 0.096 * info.height;
+      const left = Math.max(0, Math.round(cardX + cardW * 0.752)); // the photo frame sits at the right of the card
+      const top = Math.max(0, Math.round(cardY + cardH * 0.215));
+      const width = Math.min(Math.round(cardW * 0.213), info.width - left);
+      const height = Math.min(Math.round(cardH * 0.575), info.height - top);
+      if (width < 20 || height < 20) continue;
+      const crop = await sharp(data, raw).extract({ left, top, width, height }).jpeg({ quality: 82 }).toBuffer();
+      const stats = await sharp(crop).stats();
+      const spread = stats.channels.reduce((sum, c) => sum + c.stdev, 0) / stats.channels.length;
+      const serial = firstSerial + slot;
+      // An empty frame (text only, or no card here) is almost one flat colour; a real photo is not.
+      if (spread < 22) fs.writeFileSync(path.join(cacheDir, `photo-${serial}.none`), '');
+      else fs.writeFileSync(path.join(cacheDir, `photo-${serial}.jpg`), crop);
+    }
+  } finally {
+    fs.rmSync(png, { force: true });
+  }
+}
+
 app.get(
   '/api/voters/:id/photo',
   asyncHandler(async (req, res) => {
@@ -838,53 +872,27 @@ app.get(
 
     const cacheDir = path.join(OCR_PAGE_IMAGES_DIR, path.parse(doc.filename).name);
     const cached = path.join(cacheDir, `photo-${voter.serialNo}.jpg`);
-    const missing = path.join(cacheDir, `photo-${voter.serialNo}.none`); // remembers "this card has no picture"
-    if (fs.existsSync(missing)) return fail(res, 404, 'No photo');
+    const missing = path.join(cacheDir, `photo-${voter.serialNo}.none`);
 
-    if (!fs.existsSync(cached)) {
+    if (!fs.existsSync(cached) && !fs.existsSync(missing)) {
       const pdfPath = findRollPdf(doc);
       if (!pdfPath) return fail(res, 404, 'No photo');
       const first = await prisma.$queryRaw`
         SELECT MIN(serial_no)::int AS n FROM voterdb.electors WHERE document_id = ${voter.documentId} AND page_no = ${voter.pageNo}`;
-      const slot = voter.serialNo - (first[0]?.n ?? voter.serialNo);
-      if (slot < 0 || slot > 29) return fail(res, 404, 'No photo');
-
-      const pdftoppm = findPdftoppm();
-      const dpi = 200;
-      const size = pdfPageSize(pdftoppm, pdfPath);
-      const pxW = (size.w * dpi) / 72;
-      const pxH = (size.h * dpi) / 72;
-      const cardX = (CARD_COL_LEFT[slot % 3] - 0.004) * pxW;
-      const cardY = (CARD_ROW_TOP[Math.floor(slot / 3)] - 0.003) * pxH;
-      const cardW = 0.318 * pxW;
-      const cardH = 0.096 * pxH;
-      // the photo frame sits at the right of the card
-      const x = Math.round(cardX + cardW * 0.752);
-      const y = Math.round(cardY + cardH * 0.215);
-      const w = Math.round(cardW * 0.213);
-      const h = Math.round(cardH * 0.575);
-
-      fs.mkdirSync(cacheDir, { recursive: true });
-      const { spawnSync } = require('child_process');
-      spawnSync(
-        pdftoppm,
-        ['-jpeg', '-r', String(dpi), '-f', String(voter.pageNo), '-l', String(voter.pageNo), '-x', String(x), '-y', String(y), '-W', String(w), '-H', String(h), '-singlefile', pdfPath, path.join(cacheDir, `photo-${voter.serialNo}`)],
-        { windowsHide: true, timeout: 60000 }
-      );
-      if (!fs.existsSync(cached)) return fail(res, 404, 'No photo');
-      // An empty frame (text only) is almost one flat colour; a real photo is not.
-      try {
-        const stats = await require('sharp')(cached).stats();
-        const spread = stats.channels.reduce((a, c) => a + c.stdev, 0) / stats.channels.length;
-        if (spread < 22) {
-          fs.unlinkSync(cached);
-          fs.writeFileSync(missing, '');
-          return fail(res, 404, 'No photo');
-        }
-      } catch {
-        /* if the check itself fails, show what was cut out */
+      const firstSerial = first[0]?.n ?? voter.serialNo;
+      if (voter.serialNo - firstSerial > 29) return fail(res, 404, 'No photo');
+      const key = `${voter.documentId}:${voter.pageNo}`;
+      if (!photoJobs.has(key)) {
+        const job = photoChain.last
+          .then(() => cutPagePhotos({ pdfPath, cacheDir, pageNo: voter.pageNo, firstSerial }))
+          .catch((err) => console.error('photo cut failed:', err.message))
+          .finally(() => photoJobs.delete(key));
+        photoChain.last = job;
+        photoJobs.set(key, job);
       }
+      await photoJobs.get(key);
     }
+    if (fs.existsSync(missing) || !fs.existsSync(cached)) return fail(res, 404, 'No photo');
     res.setHeader('Cache-Control', 'private, max-age=86400');
     return res.sendFile(path.resolve(cached));
   })
@@ -1071,7 +1079,8 @@ const BOOTH_STATUSES = ['pending', 'active', 'complete', 'inactive'];
  * have been visited / called back / marked, or who have any contact logged.
  */
 async function loadBoothSummaries(partNo = null) {
-  const only = partNo != null ? Prisma.sql`WHERE b.part_no = ${partNo}` : Prisma.empty;
+  // The full list shows only booths that already have voters; booths still waiting to be read stay out of every screen.
+  const only = partNo != null ? Prisma.sql`WHERE b.part_no = ${partNo}` : Prisma.sql`WHERE COALESCE(e.voters, 0) > 0`;
   const rows = await prisma.$queryRaw`
     WITH e AS (
       SELECT part_no,

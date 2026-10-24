@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Download, Eye, RefreshCw } from 'lucide-react';
-import { getRollFiles, importVotersJson, retryRollFile, uploadRollPdf } from '../api/data';
+import { Eye, RefreshCw } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { getRollFile, getRollFiles, retryRollFile, uploadRollPdf } from '../api/data';
 import AlertBanner from '../components/ui/AlertBanner';
 import ConfirmButton from '../components/ui/ConfirmButton';
 import DataList, { CardShell } from '../components/ui/DataList';
@@ -8,7 +9,7 @@ import FileDropzone from '../components/ui/FileDropzone';
 import { FilterSelect } from '../components/ui/FilterBar';
 import Modal from '../components/ui/Modal';
 import PageHeader from '../components/ui/PageHeader';
-import { DetailRow, FilterField, FilterPanel, MiniFact, Pill, StatStrip, btnTool, inputSm, useViewMode, ViewSwitch } from '../components/ui/kit';
+import { DetailRow, FilterField, FilterPanel, MiniFact, Pill, StatStrip, btnTool, useViewMode, ViewSwitch } from '../components/ui/kit';
 import { useApi } from '../hooks/useApi';
 import { fmt } from '../utils/voterFormat';
 
@@ -16,7 +17,7 @@ const STATUS = {
   queued: { label: 'Waiting', color: 'var(--viz-neutral)' },
   ocr: { label: 'Reading', color: 'var(--viz-active)' },
   ready: { label: 'Ready', color: 'var(--viz-good)' },
-  needs_import: { label: 'Needs spreadsheet', color: 'var(--viz-warn)' },
+  needs_import: { label: 'Needs a check', color: 'var(--viz-warn)' },
   failed: { label: 'Failed', color: 'var(--viz-crit)' },
 };
 const statusOf = (s) => STATUS[String(s || '').toLowerCase()] || { label: String(s || '—'), color: 'var(--viz-unknown)' };
@@ -35,31 +36,6 @@ function etaLabel(sec) {
   if (sec <= 0) return 'almost done';
   if (sec < 60) return `about ${sec}s left`;
   return `about ${Math.ceil(sec / 60)} min left`;
-}
-
-/** Header names in a spreadsheet can be written many ways: "Voter ID", "voter_id", "EPIC"… */
-const norm = (h) => String(h).trim().toLowerCase().replace(/^"|"$/g, '').replace(/[\s-]+/g, '_');
-
-function parseSpreadsheet(text) {
-  const lines = text.replace(/^﻿/, '').trim().split(/\r?\n/);
-  if (lines.length < 2) return [];
-  const headers = lines[0].split(',').map(norm);
-  return lines.slice(1).map((line) => {
-    const cols = line.match(/(".*?"|[^,]+)/g) || [];
-    const row = {};
-    headers.forEach((h, i) => {
-      row[h] = (cols[i] || '').replace(/^"|"$/g, '').trim();
-    });
-    return {
-      epic: row.epic || row.voter_id || row.voterid || null,
-      name: row.name || row.elector_name || row.voter_name || 'Unknown',
-      age: row.age ? Number(row.age) : null,
-      gender: row.gender || row.sex || null,
-      house_no: row.house_no || row.house || row.house_number || null,
-      serial_no: row.serial_no || row.slno || row.serial ? Number(row.serial_no || row.slno || row.serial) : null,
-      status: row.status || 'active',
-    };
-  });
 }
 
 function Progress({ row }) {
@@ -89,18 +65,96 @@ function Progress({ row }) {
   );
 }
 
+const bytes = (n) => (n == null ? null : n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+const outOf = (n, total) => (total ? `${fmt(n)} of ${fmt(total)} (${Math.round((100 * n) / total)}%)` : fmt(n));
+const stamp = (iso) => (iso ? new Date(iso).toLocaleString() : null);
+
+function Section({ title, children }) {
+  return (
+    <section className="mt-5 first:mt-0">
+      <p className="mb-1 text-[11px] font-bold uppercase tracking-[0.08em] text-[var(--muted)]">{title}</p>
+      <dl>{children}</dl>
+    </section>
+  );
+}
+
+/** Everything known about one uploaded voter list: the file, how it was read, what came out of it, and the polling station. */
 function FileModal({ file, onClose }) {
   const state = statusOf(file.parse_status);
+  const d = useApi(() => getRollFile(file.id), [file.id, file.parse_status]);
+  const x = d.data || {};
+  const s = x.stats && x.stats.voters ? x.stats : null;
+  const roll = x.roll || {};
+  const booth = x.booth || {};
+  const pages = x.page_count || file.page_count;
+  const took = (x.document?.durationMs ?? file.duration_ms) != null ? `${Math.round((x.document?.durationMs ?? file.duration_ms) / 1000)} seconds` : etaLabel(file.ocr_eta_seconds);
+
   return (
-    <Modal title={`Booth ${file.part_no ?? '—'} · voter list`} subtitle={<Pill color={state.color}>{state.label}</Pill>} badge={file.part_no ?? '—'} size="md" onClose={onClose}>
+    <Modal
+      title={`Booth ${file.part_no ?? '—'} · voter list`}
+      subtitle={<Pill color={state.color}>{state.label}</Pill>}
+      badge={file.part_no ?? '—'}
+      size="lg"
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" onClick={onClose} className="rounded-xl px-3 py-2 text-xs font-semibold text-[var(--muted)] hover:text-[var(--ink)]">Close</button>
+          {s && file.part_no != null ? (
+            <Link to={`/app/voters?part=${file.part_no}`} className="inline-flex items-center rounded-xl bg-[var(--brand)] px-3.5 py-2 text-sm font-semibold text-white hover:brightness-110">
+              See the {fmt(s.voters)} voters
+            </Link>
+          ) : null}
+        </>
+      }
+    >
       {file.error_message ? <AlertBanner tone="danger" className="mb-3">{file.error_message}</AlertBanner> : null}
-      <dl>
-        <DetailRow label="Pages">{file.page_count ? String(file.page_count) : null}</DetailRow>
-        <DetailRow label="Voters read">{file.voter_count != null ? fmt(file.voter_count) : null}</DetailRow>
-        <DetailRow label="Time taken">{file.duration_ms != null ? `${Math.round(file.duration_ms / 1000)} seconds` : etaLabel(file.ocr_eta_seconds)}</DetailRow>
-        <DetailRow label="Saved">{file.extracted_at ? new Date(file.extracted_at).toLocaleString() : 'Not yet'}</DetailRow>
-        <DetailRow label="File name">{file.filename}</DetailRow>
-      </dl>
+      <AlertBanner tone="danger" className="mb-3">{d.error}</AlertBanner>
+
+      <div className="grid gap-x-8 md:grid-cols-2">
+        <div>
+          <Section title="The file">
+            <DetailRow label="File name">{file.filename}</DetailRow>
+            <DetailRow label="Booth">{file.part_no != null ? String(file.part_no) : null}</DetailRow>
+            <DetailRow label="Language">{x.language}</DetailRow>
+            <DetailRow label="File size">{bytes(x.size_bytes)}</DetailRow>
+            <DetailRow label="Uploaded on">{stamp(x.uploaded_at || file.uploaded_at)}</DetailRow>
+          </Section>
+          <Section title="How it was read">
+            <DetailRow label="Pages">{pages ? String(pages) : null}</DetailRow>
+            <DetailRow label="Pages with voters">{s ? String(s.pages_with_voters) : null}</DetailRow>
+            <DetailRow label="Time taken">{took}</DetailRow>
+            <DetailRow label="Finished on">{stamp(x.processed_at || file.extracted_at) || 'Not yet'}</DetailRow>
+          </Section>
+        </div>
+
+        <div>
+          <Section title="What was read">
+            {s ? (
+              <>
+                <DetailRow label="Voters">{fmt(s.voters)}</DetailRow>
+                <DetailRow label="Men · Women">{`${fmt(s.male)} · ${fmt(s.female)}${s.voters - s.male - s.female ? ` (+${fmt(s.voters - s.male - s.female)} not read)` : ''}`}</DetailRow>
+                <DetailRow label="Voter ID read">{outOf(s.with_epic, s.voters)}</DetailRow>
+                <DetailRow label="Age read">{outOf(s.with_age, s.voters)}</DetailRow>
+                <DetailRow label="House number read">{outOf(s.with_house, s.voters)}</DetailRow>
+                <DetailRow label="Average age">{s.avg_age != null ? `${Math.round(s.avg_age)} years` : null}</DetailRow>
+                <DetailRow label="Households">{fmt(s.households)}</DetailRow>
+                <DetailRow label="Roads">{fmt(s.roads)}</DetailRow>
+                <DetailRow label="Phone numbers saved">{outOf(s.with_phone, s.voters)}</DetailRow>
+                <DetailRow label="List numbers">{s.first_serial != null ? `${s.first_serial} to ${s.last_serial}` : null}</DetailRow>
+              </>
+            ) : (
+              <p className="py-2 text-sm text-[var(--muted)]">{d.loading ? 'Loading…' : 'No voters saved from this file yet.'}</p>
+            )}
+          </Section>
+          <Section title="Polling station">
+            <DetailRow label="Name">{booth.pollingStationName && !/^Polling Station Part \d+$/.test(booth.pollingStationName) ? booth.pollingStationName : null}</DetailRow>
+            <DetailRow label="Address">{booth.pollingStationAddress}</DetailRow>
+            <DetailRow label="Area">{booth.areaName && !/^Part \d+$/.test(booth.areaName) ? booth.areaName : null}</DetailRow>
+            <DetailRow label="Assembly">{roll.assembly}</DetailRow>
+            <DetailRow label="List published">{roll.publication_date}</DetailRow>
+          </Section>
+        </div>
+      </div>
     </Modal>
   );
 }
@@ -111,7 +165,6 @@ export default function DataPage() {
 
   const [uploading, setUploading] = useState(false);
   const [queue, setQueue] = useState([]); // one row per PDF picked: waiting / uploading / done / error
-  const [importPart, setImportPart] = useState('');
   const [message, setMessage] = useState('');
   const [busyId, setBusyId] = useState(null);
   const [query, setQuery] = useState('');
@@ -160,17 +213,32 @@ export default function DataPage() {
     async (picked) => {
       const chosen = Array.from(picked || []);
       if (!chosen.length) return;
+      // What is already uploaded (waiting, being read, or done) is never uploaded again.
+      const alive = ['queued', 'ocr', 'ready', 'needs_import'];
+      const knownNames = new Set(list.filter((f) => alive.includes(f.parse_status)).map((f) => f.filename));
+      const knownParts = new Map(list.filter((f) => alive.includes(f.parse_status) && f.part_no != null).map((f) => [Number(f.part_no), f.filename]));
+      const partOf = (name) => {
+        const m = String(name).match(/[-_](?:ENG|TEL)-(\d+)/i);
+        return m ? Number(m[1]) : null;
+      };
       const seen = new Set();
+      const seenParts = new Set();
       const rows = chosen.map((file, i) => {
         const id = `${Date.now()}-${i}`;
         const isPdf = /\.pdf$/i.test(file.name) || file.type === 'application/pdf';
+        const part = partOf(file.name);
         const dup = seen.has(file.name);
         seen.add(file.name);
+        const dupPart = part != null && seenParts.has(part);
+        if (part != null) seenParts.add(part);
         let status = 'waiting';
         let problem = '';
         if (!isPdf) [status, problem] = ['error', 'Not a PDF file'];
-        else if (dup) [status, problem] = ['error', 'Same file chosen twice'];
+        else if (dup) [status, problem] = ['skipped', 'Same file chosen twice'];
         else if (file.size > 50 * 1024 * 1024) [status, problem] = ['error', 'Larger than 50 MB'];
+        else if (knownNames.has(file.name)) [status, problem] = ['skipped', 'Already uploaded'];
+        else if (part != null && knownParts.has(part)) [status, problem] = ['skipped', `Booth ${part} is already uploaded`];
+        else if (dupPart) [status, problem] = ['skipped', `Booth ${part} chosen twice`];
         return { id, file, name: file.name, size: file.size, status, pct: 0, problem };
       });
       setQueue(rows);
@@ -185,44 +253,29 @@ export default function DataPage() {
           done += 1;
           patchRow(row.id, { status: 'done', pct: 100, part_no: result?.part_no });
         } catch (err) {
-          patchRow(row.id, { status: 'error', problem: err.message || 'Upload failed' });
+          // 409 = the server found it is already there (someone else uploaded it a moment ago): not a failure
+          if (err.status === 409) {
+            row.status = 'skipped';
+            patchRow(row.id, { status: 'skipped', problem: err.message });
+          } else {
+            row.status = 'error';
+            patchRow(row.id, { status: 'error', problem: err.message || 'Upload failed' });
+          }
         }
       }
       setUploading(false);
-      const failed = rows.length - done;
+      const skipped = rows.filter((r) => r.status === 'skipped').length;
+      const failed = rows.filter((r) => r.status === 'error').length;
       setMessage(
         done
-          ? `${done} voter list${done === 1 ? '' : 's'} uploaded. Reading starts automatically, one file at a time.${failed ? ` ${failed} could not be uploaded.` : ''}`
-          : 'No files were uploaded.'
+          ? `${done} voter list${done === 1 ? '' : 's'} uploaded. Reading starts automatically, one file at a time.${skipped ? ` ${skipped} skipped because already uploaded.` : ''}${failed ? ` ${failed} could not be uploaded.` : ''}`
+          : skipped && !failed
+            ? `Nothing new to upload: ${skipped === 1 ? 'that file is' : 'those files are'} already uploaded.`
+            : 'No files were uploaded.'
       );
       setTimeout(() => reload({ silent: true }), 800);
     },
-    [patchRow, reload]
-  );
-
-  const onImportSheet = useCallback(
-    async (picked) => {
-      const file = picked?.[0];
-      if (!file) return;
-      if (!importPart) {
-        setMessage('Enter the booth number first.');
-        return;
-      }
-      setUploading(true);
-      setMessage('');
-      try {
-        const voters = parseSpreadsheet(await file.text()).filter((v) => v.name !== 'Unknown');
-        if (!voters.length) throw new Error('No voters found in this spreadsheet');
-        const result = await importVotersJson(Number(importPart), voters);
-        setMessage(`${fmt(result.imported)} voters added to booth ${result.part_no}.`);
-        reload({ silent: true });
-      } catch (err) {
-        setMessage(err.message);
-      } finally {
-        setUploading(false);
-      }
-    },
-    [importPart, reload]
+    [list, patchRow, reload]
   );
 
   const onRetry = useCallback(
@@ -243,7 +296,7 @@ export default function DataPage() {
 
   /** Finished files ask first: reading again replaces the voters of that booth. */
   const retryControl = (f) =>
-    f.parse_status === 'ready' ? (
+    f.parse_status === 'ready' || f.parse_status === 'needs_import' ? (
       <ConfirmButton label="Read again" confirmLabel="Yes, replace voters" onConfirm={() => onRetry(f.id)} disabled={busyId === f.id} />
     ) : RUNNING.includes(String(f.parse_status)) ? null : (
       <button type="button" disabled={busyId === f.id} onClick={() => onRetry(f.id)} className="rounded-xl px-3 py-2 text-xs font-semibold text-[var(--ink-soft)] transition hover:text-[var(--brand)] disabled:opacity-50">
@@ -282,13 +335,7 @@ export default function DataPage() {
               <Eye className="h-3.5 w-3.5" />
               View
             </button>
-            {f.parse_status === 'needs_import' && f.part_no ? (
-              <button type="button" onClick={() => { setImportPart(String(f.part_no)); setMessage(`Booth ${f.part_no} is ready for a spreadsheet. Drop it in the box above.`); }} className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-[var(--brand)] hover:underline">
-                Add voters
-              </button>
-            ) : (
-              retryControl(f)
-            )}
+            {retryControl(f)}
           </div>
         ),
       },
@@ -317,7 +364,7 @@ export default function DataPage() {
         <MiniFact label="Voters">{fmt(f.voter_count ?? 0)}</MiniFact>
       </dl>
       {f.error_message ? <p className="mt-2 text-xs text-[var(--danger)]">{f.error_message}</p> : null}
-      <div className="mt-2 flex justify-end">{f.parse_status === 'needs_import' ? null : retryControl(f)}</div>
+      <div className="mt-2 flex justify-end">{retryControl(f)}</div>
     </CardShell>
   );
 
@@ -333,10 +380,6 @@ export default function DataPage() {
         actions={
           <>
             <ViewSwitch view={view} onChange={setView} />
-            <a href="/templates/voters-import-template.csv" download className={btnTool}>
-              <Download className="h-3.5 w-3.5" />
-              Spreadsheet template
-            </a>
             <button type="button" onClick={() => reload()} className={btnTool}>
               <RefreshCw className="h-3.5 w-3.5" />
               Refresh
@@ -349,22 +392,13 @@ export default function DataPage() {
         items={[
           { label: 'Files', value: fmt(stats.total), hint: 'voter lists uploaded' },
           { label: 'Being read', value: fmt(stats.reading), hint: stats.reading ? 'updating every few seconds' : 'nothing in progress' },
-          { label: 'Needs spreadsheet', value: fmt(stats.waiting), hint: 'could not be read fully' },
+          { label: 'Needs a check', value: fmt(stats.waiting), hint: 'read, but some details are missing' },
           { label: 'Ready', value: fmt(stats.ready), hint: 'ready to use' },
           { label: 'Voters', value: fmt(stats.voters), hint: 'across all files' },
         ]}
       />
 
-      <div className="grid gap-3 lg:grid-cols-2">
-        <FileDropzone accept="application/pdf,.pdf" multiple busy={uploading} onFiles={onUploadPdf} title="Drop voter list PDFs here, one or many" hint="Choose several files at once. We read every page and fill in the voter details" />
-        <div className="space-y-2 rounded-2xl border border-[var(--line)] bg-[var(--bg-elevated)] p-3 shadow-soft">
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-sm font-bold text-[var(--ink)]">Add voters from a spreadsheet</p>
-            <input type="number" min={1} max={247} value={importPart} onChange={(e) => setImportPart(e.target.value)} placeholder="Booth no." aria-label="Booth number" className={`${inputSm} !w-28`} />
-          </div>
-          <FileDropzone accept=".csv,text/csv" icon="csv" busy={uploading} onFiles={onImportSheet} title={importPart ? `Spreadsheet for booth ${importPart}` : 'Enter the booth number, then drop the spreadsheet'} hint="Columns: voter ID, name, age, gender, house number" />
-        </div>
-      </div>
+      <FileDropzone accept="application/pdf,.pdf" multiple busy={uploading} onFiles={onUploadPdf} title="Drop voter list PDFs here, one or many" hint="Choose several files at once. We read every page and fill in the voter details. Files already uploaded are skipped." />
 
       <AlertBanner tone="info">{message}</AlertBanner>
       <AlertBanner tone="danger">{error}</AlertBanner>
@@ -375,7 +409,8 @@ export default function DataPage() {
             <p className="text-sm font-bold text-[var(--ink)]">
               Uploading {queue.length} file{queue.length === 1 ? '' : 's'} ·{' '}
               <span className="font-semibold text-[var(--muted)]">
-                {queue.filter((r) => r.status === 'done').length} done
+                {queue.filter((r) => r.status === 'done').length} uploaded
+                {queue.some((r) => r.status === 'skipped') ? `, ${queue.filter((r) => r.status === 'skipped').length} skipped (already there)` : ''}
                 {queue.some((r) => r.status === 'error') ? `, ${queue.filter((r) => r.status === 'error').length} failed` : ''}
               </span>
             </p>
@@ -395,7 +430,7 @@ export default function DataPage() {
                   <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-[var(--viz-track)]">
                     <span
                       className="block h-full rounded-full transition-all"
-                      style={{ width: `${r.status === 'error' ? 100 : r.pct}%`, background: r.status === 'error' ? '#d64545' : 'var(--brand)' }}
+                      style={{ width: `${r.status === 'error' || r.status === 'skipped' ? 100 : r.pct}%`, background: r.status === 'error' ? '#d64545' : r.status === 'skipped' ? '#d9a441' : 'var(--brand)' }}
                     />
                   </div>
                 </div>
@@ -404,6 +439,7 @@ export default function DataPage() {
                   {r.status === 'uploading' ? `Uploading ${r.pct}%` : null}
                   {r.status === 'done' ? `Uploaded${r.part_no ? ` · booth ${r.part_no}` : ''}` : null}
                   {r.status === 'error' ? <span className="font-semibold text-[#d64545]">{r.problem}</span> : null}
+                  {r.status === 'skipped' ? <span className="font-semibold text-[var(--ink-soft)]">Skipped · {r.problem}</span> : null}
                 </span>
               </li>
             ))}

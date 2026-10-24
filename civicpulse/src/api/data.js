@@ -31,10 +31,6 @@ export function retryRollFile(id) {
   return client.post(`/data/files/${id}/retry`).then(unwrap);
 }
 
-export function importVotersJson(partNo, voters) {
-  return client.post('/data/import', { part_no: partNo, voters }).then(unwrap);
-}
-
 export function getPartRollInfo(partNo) {
   return client.get(`/parts/${partNo}/roll-info`).then(unwrap);
 }

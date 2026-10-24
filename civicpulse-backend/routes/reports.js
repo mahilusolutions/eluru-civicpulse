@@ -78,7 +78,7 @@ module.exports = function registerReports({ app, prisma, ok, fail, asyncHandler,
     asyncHandler(async (_req, res) => {
       const [voters, booths, households, issues, outreach, team] = await Promise.all([
         prisma.elector.count(),
-        prisma.booth.count(),
+        prisma.$queryRaw`SELECT COUNT(DISTINCT part_no)::int AS n FROM voterdb.electors`.then((r) => r[0].n),
         prisma.$queryRaw`SELECT COUNT(*)::int AS n FROM (SELECT 1 FROM voterdb.electors WHERE house_no IS NOT NULL AND house_no <> '' GROUP BY part_no, house_no) g`,
         prisma.issue.count(),
         prisma.outreach.count(),

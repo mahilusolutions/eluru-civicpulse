@@ -13,7 +13,7 @@ module.exports = function registerElectionDay({ app, prisma, ok, fail, asyncHand
               s.updated_at
        FROM public.booths b
        LEFT JOIN public.election_day_stats s ON s.part_no = b.part_no
-       ${partNo != null ? `WHERE b.part_no = ${Number(partNo)}` : ''}
+       ${partNo != null ? `WHERE b.part_no = ${Number(partNo)}` : 'WHERE EXISTS (SELECT 1 FROM voterdb.electors x WHERE x.part_no = b.part_no)'}
        ORDER BY b.part_no`
     );
     return rows.map((r) => {
