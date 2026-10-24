@@ -779,44 +779,22 @@ app.get(
     });
     if (!doc) return fail(res, 404, 'Card not available');
 
-    const stem = path.parse(doc.filename).name;
-    const cacheDir = path.join(OCR_PAGE_IMAGES_DIR, stem);
-    const cached = path.join(cacheDir, `card-${voter.serialNo}.png`);
-    if (!fs.existsSync(cached)) {
-      const pdfPath = findRollPdf(doc);
-      if (!pdfPath) return fail(res, 404, 'Roll file not available');
-
-      const first = await prisma.$queryRaw`
-        SELECT MIN(serial_no)::int AS n FROM voterdb.electors
-        WHERE document_id = ${voter.documentId} AND page_no = ${voter.pageNo}`;
-      const slot = voter.serialNo - (first[0]?.n ?? voter.serialNo);
-      if (slot < 0 || slot > 29) return fail(res, 404, 'Card not available');
-
-      const pdftoppm = findPdftoppm();
-      const dpi = 220;
-      const size = pdfPageSize(pdftoppm, pdfPath);
-      const pxW = (size.w * dpi) / 72;
-      const pxH = (size.h * dpi) / 72;
-      const col = slot % 3;
-      const row = Math.floor(slot / 3);
-      const x = Math.max(0, Math.round((CARD_COL_LEFT[col] - 0.004) * pxW));
-      const y = Math.max(0, Math.round((CARD_ROW_TOP[row] - 0.003) * pxH));
-      const w = Math.round(0.318 * pxW);
-      const h = Math.round(0.096 * pxH);
-
-      fs.mkdirSync(cacheDir, { recursive: true });
-      const { spawnSync } = require('child_process');
-      const prefix = path.join(cacheDir, `card-${voter.serialNo}`);
-      const run = spawnSync(
-        pdftoppm,
-        ['-png', '-r', String(dpi), '-f', String(voter.pageNo), '-l', String(voter.pageNo), '-x', String(x), '-y', String(y), '-W', String(w), '-H', String(h), '-singlefile', pdfPath, prefix],
-        { windowsHide: true, timeout: 60000 }
-      );
-      if (run.error) console.warn('card image render:', run.error.message);
-      if (!fs.existsSync(cached)) return fail(res, 404, 'Card image not available');
-    }
-    res.setHeader('Cache-Control', 'public, max-age=86400');
-    return res.sendFile(path.resolve(cached));
+    // The card was cut out of the PDF once, in the background, and is kept in the database (lib/photos.js).
+    const id = BigInt(req.params.id);
+    const send = async () => {
+      const [row] = await prisma.$queryRaw`SELECT card_image FROM voterdb.electors WHERE id = ${id} AND card_image IS NOT NULL`;
+      if (!row) return false;
+      res.setHeader('Content-Type', 'image/jpeg');
+      res.setHeader('Cache-Control', 'private, max-age=604800, immutable');
+      res.end(Buffer.from(row.card_image));
+      return true;
+    };
+    if (await send()) return undefined;
+    const pdfPath = findRollPdf(doc);
+    if (!pdfPath) return fail(res, 404, 'Roll file not available');
+    await cutPageQueued({ prisma, pdfPath, documentId: voter.documentId, pageNo: voter.pageNo, withPhotos: isTeluguRoll(doc.filename) }).catch((err) => console.error('card cut failed:', err.message));
+    if (await send()) return undefined;
+    return fail(res, 404, 'Card image not available');
   })
 );
 
@@ -847,7 +825,7 @@ app.get(
     if (seen?.photo_done) return fail(res, 404, 'No photo');
     const pdfPath = findRollPdf(doc);
     if (!pdfPath) return fail(res, 404, 'No photo');
-    await cutPageQueued({ prisma, pdfPath, documentId: voter.documentId, pageNo: voter.pageNo }).catch((err) => console.error('photo cut failed:', err.message));
+    await cutPageQueued({ prisma, pdfPath, documentId: voter.documentId, pageNo: voter.pageNo, withPhotos: true }).catch((err) => console.error('photo cut failed:', err.message));
     if (await send()) return undefined;
     return fail(res, 404, 'No photo');
   })
