@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { Link, useNavigate } from 'react-router-dom';
 import { ArrowRight, X } from 'lucide-react';
 import { apiAssetUrl } from '../../api/baseUrl';
-import { getBooth, updateBooth } from '../../api/booths';
+import { getBooth, getBoothPeople, updateBooth } from '../../api/booths';
 import { btnPrimary, inputClass } from '../ui/Panel';
 import { AgePyramid, BarList } from '../voters/VoterCharts';
 import { BOOTH_STATUS, boothStatus, reachedPct, stationName } from '../../utils/boothFormat';
@@ -28,7 +28,8 @@ export default function BoothModal({ part, canEdit, onClose, onSaved }) {
   const navigate = useNavigate();
   const [booth, setBooth] = useState(null);
   const [error, setError] = useState('');
-  const [form, setForm] = useState({ agent_name: '', coordinator_name: '', status: 'pending', lat: '', lng: '' });
+  const [form, setForm] = useState({ agent_user_id: '', coordinator_user_id: '', status: 'pending', lat: '', lng: '' });
+  const [people, setPeople] = useState({ agents: [], coordinators: [] });
   const [saving, setSaving] = useState(false);
   const [note, setNote] = useState('');
   const [shot, setShot] = useState(null);
@@ -43,8 +44,8 @@ export default function BoothModal({ part, canEdit, onClose, onSaved }) {
         if (cancelled) return;
         setBooth(data);
         setForm({
-          agent_name: data.agent_name || '',
-          coordinator_name: data.coordinator_name || '',
+          agent_user_id: data.agent_user_id || '',
+          coordinator_user_id: data.coordinator_user_id || '',
           status: data.status || 'pending',
           lat: data.lat ?? '',
           lng: data.lng ?? '',
@@ -55,6 +56,13 @@ export default function BoothModal({ part, canEdit, onClose, onSaved }) {
       cancelled = true;
     };
   }, [part]);
+
+  useEffect(() => {
+    if (!canEdit) return;
+    getBoothPeople()
+      .then(setPeople)
+      .catch(() => {});
+  }, [canEdit]);
 
   useEffect(() => {
     const onKey = (e) => e.key === 'Escape' && onClose();
@@ -95,8 +103,8 @@ export default function BoothModal({ part, canEdit, onClose, onSaved }) {
   const reached = reachedPct(booth);
   const dirty =
     booth &&
-    (form.agent_name !== (booth.agent_name || '') ||
-      form.coordinator_name !== (booth.coordinator_name || '') ||
+    (form.agent_user_id !== (booth.agent_user_id || '') ||
+      form.coordinator_user_id !== (booth.coordinator_user_id || '') ||
       form.status !== (booth.status || 'pending') ||
       String(form.lat) !== String(booth.lat ?? '') ||
       String(form.lng) !== String(booth.lng ?? ''));
@@ -211,21 +219,33 @@ export default function BoothModal({ part, canEdit, onClose, onSaved }) {
                   <form onSubmit={save} className="grid gap-2 sm:grid-cols-[1fr_1fr_10rem] sm:items-end">
                     <label className="block text-[11px] font-semibold text-[var(--muted)]">
                       Booth agent
-                      <input
-                        value={form.agent_name}
-                        onChange={(e) => setForm({ ...form, agent_name: e.target.value })}
-                        placeholder="Name"
+                      <select
+                        value={form.agent_user_id}
+                        onChange={(e) => setForm({ ...form, agent_user_id: e.target.value })}
                         className={`${inputClass} mt-1 !py-2`}
-                      />
+                      >
+                        <option value="">Not assigned</option>
+                        {people.agents.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}
+                          </option>
+                        ))}
+                      </select>
                     </label>
                     <label className="block text-[11px] font-semibold text-[var(--muted)]">
                       Coordinator
-                      <input
-                        value={form.coordinator_name}
-                        onChange={(e) => setForm({ ...form, coordinator_name: e.target.value })}
-                        placeholder="Name"
+                      <select
+                        value={form.coordinator_user_id}
+                        onChange={(e) => setForm({ ...form, coordinator_user_id: e.target.value })}
                         className={`${inputClass} mt-1 !py-2`}
-                      />
+                      >
+                        <option value="">Not assigned</option>
+                        {people.coordinators.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}
+                          </option>
+                        ))}
+                      </select>
                     </label>
                     <label className="block text-[11px] font-semibold text-[var(--muted)]">
                       Status

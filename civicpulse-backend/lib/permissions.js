@@ -23,6 +23,7 @@ const RULES = [
   ['GET', /^\/data(\/|$)/, ADMINS],
   ['GET', /^\/audit(\/|$)/, ADMINS],
   ['GET', /^\/team(\/|$)/, LEADS],
+  ['GET', /^\/booths\/people$/, LEADS],
   ['GET', /^\/reports(\/|$)/, [SA, AD, CO, BA, VW]],
   ['GET', /^\/election-day(\/|$)/, [SA, AD, CO, BA, VW]],
   ['GET', /^\/voters\/export$/, LEADS],

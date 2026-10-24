@@ -11,3 +11,7 @@ export function getBooth(part) {
 export function updateBooth(part, payload) {
   return client.patch(`/booths/${part}`, payload).then(unwrap);
 }
+
+export function getBoothPeople() {
+  return client.get('/booths/people').then(unwrap);
+}

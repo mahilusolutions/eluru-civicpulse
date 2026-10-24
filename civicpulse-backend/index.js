@@ -1032,7 +1032,7 @@ async function loadBoothSummaries(partNo = null) {
       GROUP BY part_no
     )
     SELECT b.part_no, b.polling_station_name, b.polling_station_address, b.area_name,
-           b.ac_code, b.ac_name, b.agent_name, b.coordinator_name, b.status::text AS status,
+           b.ac_code, b.ac_name, b.agent_name, b.coordinator_name, b.agent_user_id::text AS agent_user_id, b.coordinator_user_id::text AS coordinator_user_id, b.status::text AS status,
            b.lat, b.lng, b.ward_id, w.ward_no, w.name AS ward_name,
            COALESCE(e.voters, 0) AS voters,
            COALESCE(e.male, 0) AS male,
@@ -1059,6 +1059,20 @@ app.get(
   '/api/booths',
   asyncHandler(async (_req, res) => {
     ok(res, await loadBoothSummaries());
+  })
+);
+
+// The people a booth's agent / coordinator can be picked from: active accounts with that role.
+app.get(
+  '/api/booths/people',
+  asyncHandler(async (_req, res) => {
+    const rows = await prisma.$queryRaw`
+      SELECT id::text AS id, full_name, username, role FROM public.app_users
+      WHERE status = 'active' AND role IN ('booth_agent', 'coordinator') ORDER BY full_name`;
+    ok(res, {
+      agents: rows.filter((r) => r.role === 'booth_agent').map(({ id, full_name, username }) => ({ id, name: full_name, username })),
+      coordinators: rows.filter((r) => r.role === 'coordinator').map(({ id, full_name, username }) => ({ id, name: full_name, username })),
+    });
   })
 );
 
@@ -1143,7 +1157,7 @@ app.patch(
   '/api/booths/:part',
   asyncHandler(async (req, res) => {
     const partNo = Number(req.params.part);
-    const { agent_name, coverage_pct, status, coordinator_name, lat, lng } = req.body || {};
+    const { agent_user_id, coverage_pct, status, coordinator_user_id, lat, lng } = req.body || {};
     const coord = (v, limit) => {
       if (v === undefined) return undefined;
       if (v === null || v === '') return null;
@@ -1158,15 +1172,27 @@ app.patch(
       const t = String(v ?? '').trim().slice(0, 120);
       return t || null;
     };
+    // Agent and coordinator are never typed in: they must be an active account with that role (or empty).
+    const person = async (v, role) => {
+      if (v === undefined) return undefined;
+      if (v === null || v === '') return { id: null, name: null };
+      if (!/^\d{1,18}$/.test(String(v))) return false;
+      const [u] = await prisma.$queryRaw`SELECT id, full_name FROM public.app_users WHERE id = ${BigInt(v)} AND role = ${role} AND status = 'active'`;
+      return u ? { id: u.id, name: u.full_name } : false;
+    };
+    const agent = await person(agent_user_id, 'booth_agent');
+    const coordinator = await person(coordinator_user_id, 'coordinator');
+    if (agent === false) return fail(res, 400, 'Choose the booth agent from the list of booth agent accounts.');
+    if (coordinator === false) return fail(res, 400, 'Choose the coordinator from the list of coordinator accounts.');
     const existing = await prisma.booth.findUnique({ where: { partNo } });
     if (!existing) return fail(res, 404, 'Booth not found');
+    if (agent) await prisma.$executeRaw`UPDATE public.booths SET agent_user_id = ${agent.id}, agent_name = ${agent.name} WHERE part_no = ${partNo}`;
+    if (coordinator) await prisma.$executeRaw`UPDATE public.booths SET coordinator_user_id = ${coordinator.id}, coordinator_name = ${coordinator.name} WHERE part_no = ${partNo}`;
     const booth = await prisma.booth.update({
       where: { partNo },
       data: {
-        ...(agent_name !== undefined ? { agentName: clean(agent_name) } : {}),
         ...(coverage_pct !== undefined ? { coveragePct: coverage_pct } : {}),
         ...(status ? { status } : {}),
-        ...(coordinator_name !== undefined ? { coordinatorName: clean(coordinator_name) } : {}),
         ...(nextLat !== undefined ? { lat: nextLat } : {}),
         ...(nextLng !== undefined ? { lng: nextLng } : {}),
       },

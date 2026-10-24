@@ -85,6 +85,9 @@ async function initDb() {
     await ensureAuthTables(prisma);
     await ensureBoothMediaTable(prisma);
     await ensurePhotoTables(prisma);
+    // The booth agent and coordinator are chosen from the app's own accounts; the names are kept alongside for display.
+    await prisma.$executeRawUnsafe('ALTER TABLE public.booths ADD COLUMN IF NOT EXISTS agent_user_id bigint');
+    await prisma.$executeRawUnsafe('ALTER TABLE public.booths ADD COLUMN IF NOT EXISTS coordinator_user_id bigint');
   } catch (err) {
     console.warn('audit table ensure:', err.message);
   }

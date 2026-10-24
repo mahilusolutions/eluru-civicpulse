@@ -502,6 +502,11 @@ module.exports = function registerAccess({ app, prisma, ok, fail, asyncHandler, 
         UPDATE public.app_users
         SET full_name = ${next.full_name}, mobile = ${next.mobile}, email = ${next.email}, username = ${next.username}, role = ${next.role}, status = ${next.status}
         WHERE id = ${u.id}`;
+      // A booth keeps its agent / coordinator only while the account is active in that role; names follow the account.
+      await prisma.$executeRaw`UPDATE public.booths SET agent_user_id = NULL, agent_name = NULL WHERE agent_user_id = ${u.id} AND (${next.role} <> 'booth_agent' OR ${next.status} <> 'active')`;
+      await prisma.$executeRaw`UPDATE public.booths SET coordinator_user_id = NULL, coordinator_name = NULL WHERE coordinator_user_id = ${u.id} AND (${next.role} <> 'coordinator' OR ${next.status} <> 'active')`;
+      await prisma.$executeRaw`UPDATE public.booths SET agent_name = ${next.full_name} WHERE agent_user_id = ${u.id}`;
+      await prisma.$executeRaw`UPDATE public.booths SET coordinator_name = ${next.full_name} WHERE coordinator_user_id = ${u.id}`;
       // Role, status or username changes take effect at once: the person is signed out everywhere (except yourself).
       if (changed.some((k) => ['role', 'status', 'username'].includes(k)) && !u.isSelf) {
         await prisma.$executeRaw`UPDATE public.auth_sessions SET revoked_at = now() WHERE user_id = ${u.id} AND revoked_at IS NULL`;
@@ -528,6 +533,8 @@ module.exports = function registerAccess({ app, prisma, ok, fail, asyncHandler, 
       if (u.role === 'super_admin' && u.status === 'active' && (await otherActiveSuperAdmins(u)) === 0) return fail(res, 409, 'This is the last active Super Admin.');
       await prisma.$transaction(async (tx) => {
         await tx.$executeRaw`UPDATE public.access_requests SET user_id = NULL, credential_cipher = NULL WHERE user_id = ${u.id}`;
+        await tx.$executeRaw`UPDATE public.booths SET agent_user_id = NULL, agent_name = NULL WHERE agent_user_id = ${u.id}`;
+        await tx.$executeRaw`UPDATE public.booths SET coordinator_user_id = NULL, coordinator_name = NULL WHERE coordinator_user_id = ${u.id}`;
         await tx.$executeRaw`DELETE FROM public.app_users WHERE id = ${u.id}`; // sessions go with it
       });
       auth.forgetSessions();
