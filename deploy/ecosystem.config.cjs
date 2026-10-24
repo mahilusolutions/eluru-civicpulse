@@ -45,7 +45,8 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: 2000,
-        OCR_PAGE_WORKERS: '3',
+        OCR_PAGE_WORKERS: '2', // = number of processors on the server
+        OMP_THREAD_LIMIT: '1', // one thread per tesseract: more threads than processors only slows everything down
         OCR_DPI: '160',
         OCR_SAVE_DISK: '0',
         OCR_PUBLIC_BASE: '/ocr',
