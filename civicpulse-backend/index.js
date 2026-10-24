@@ -820,81 +820,35 @@ app.get(
   })
 );
 
-// A voter's photo, cut out of their printed card. Telugu rolls print a photo on every card; the English rolls only say "Photo Available".
-// Opening one voter cuts out all 30 photos of that page in one go and keeps them, so lists of voters load instantly afterwards.
-const isTeluguRoll = (filename) => /[-_]TEL[-_]\d+/i.test(String(filename || ''));
-const execFileAsync = require('util').promisify(require('child_process').execFile);
-const photoJobs = new Map(); // "document:page" -> the job cutting that page
-const photoChain = { last: Promise.resolve() }; // one page at a time, so cutting photos never starves the website of CPU
-
-async function cutPagePhotos({ pdfPath, cacheDir, pageNo, firstSerial }) {
-  const sharp = require('sharp');
-  fs.mkdirSync(cacheDir, { recursive: true });
-  const prefix = path.join(cacheDir, `pagetmp-${pageNo}`);
-  await execFileAsync(findPdftoppm(), ['-png', '-r', '200', '-f', String(pageNo), '-l', String(pageNo), '-singlefile', pdfPath, prefix], { windowsHide: true, timeout: 120000 });
-  const png = `${prefix}.png`;
-  try {
-    const { data, info } = await sharp(png).removeAlpha().raw().toBuffer({ resolveWithObject: true });
-    const raw = { raw: { width: info.width, height: info.height, channels: info.channels } };
-    for (let slot = 0; slot < 30; slot += 1) {
-      const cardX = (CARD_COL_LEFT[slot % 3] - 0.004) * info.width;
-      const cardY = (CARD_ROW_TOP[Math.floor(slot / 3)] - 0.003) * info.height;
-      const cardW = 0.318 * info.width;
-      const cardH = 0.096 * info.height;
-      const left = Math.max(0, Math.round(cardX + cardW * 0.752)); // the photo frame sits at the right of the card
-      const top = Math.max(0, Math.round(cardY + cardH * 0.215));
-      const width = Math.min(Math.round(cardW * 0.213), info.width - left);
-      const height = Math.min(Math.round(cardH * 0.575), info.height - top);
-      if (width < 20 || height < 20) continue;
-      const crop = await sharp(data, raw).extract({ left, top, width, height }).jpeg({ quality: 82 }).toBuffer();
-      const stats = await sharp(crop).stats();
-      const spread = stats.channels.reduce((sum, c) => sum + c.stdev, 0) / stats.channels.length;
-      const serial = firstSerial + slot;
-      // An empty frame (text only, or no card here) is almost one flat colour; a real photo is not.
-      if (spread < 22) fs.writeFileSync(path.join(cacheDir, `photo-${serial}.none`), '');
-      else fs.writeFileSync(path.join(cacheDir, `photo-${serial}.jpg`), crop);
-    }
-  } finally {
-    fs.rmSync(png, { force: true });
-  }
-}
+// A voter's photo. Telugu rolls print a photo on every card. The photos are cut out of the PDF once, in the background
+// (lib/photos.js), and kept in the database, so this is only a database read. If a page has not been cut yet, it is cut now.
+const { ensurePhotoTables, cutPageQueued, startPhotoWorker, isTeluguRoll } = require('./lib/photos');
 
 app.get(
   '/api/voters/:id/photo',
   asyncHandler(async (req, res) => {
-    const voter = await prisma.elector.findUnique({
-      where: { id: BigInt(req.params.id) },
-      select: { documentId: true, pageNo: true, serialNo: true },
-    });
+    const id = BigInt(req.params.id);
+    const send = async () => {
+      const [row] = await prisma.$queryRaw`SELECT mime, data FROM voterdb.elector_photos WHERE elector_id = ${id}`;
+      if (!row) return false;
+      res.setHeader('Content-Type', row.mime);
+      res.setHeader('Cache-Control', 'private, max-age=604800, immutable');
+      res.end(Buffer.from(row.data));
+      return true;
+    };
+    if (await send()) return undefined;
+
+    const voter = await prisma.elector.findUnique({ where: { id }, select: { documentId: true, pageNo: true } });
     if (!voter?.documentId || voter.pageNo == null) return fail(res, 404, 'No photo');
     const doc = await prisma.extractedDocument.findUnique({ where: { id: voter.documentId }, select: { filename: true, storagePath: true } });
     if (!doc || !isTeluguRoll(doc.filename)) return fail(res, 404, 'No photo');
-
-    const cacheDir = path.join(OCR_PAGE_IMAGES_DIR, path.parse(doc.filename).name);
-    const cached = path.join(cacheDir, `photo-${voter.serialNo}.jpg`);
-    const missing = path.join(cacheDir, `photo-${voter.serialNo}.none`);
-
-    if (!fs.existsSync(cached) && !fs.existsSync(missing)) {
-      const pdfPath = findRollPdf(doc);
-      if (!pdfPath) return fail(res, 404, 'No photo');
-      const first = await prisma.$queryRaw`
-        SELECT MIN(serial_no)::int AS n FROM voterdb.electors WHERE document_id = ${voter.documentId} AND page_no = ${voter.pageNo}`;
-      const firstSerial = first[0]?.n ?? voter.serialNo;
-      if (voter.serialNo - firstSerial > 29) return fail(res, 404, 'No photo');
-      const key = `${voter.documentId}:${voter.pageNo}`;
-      if (!photoJobs.has(key)) {
-        const job = photoChain.last
-          .then(() => cutPagePhotos({ pdfPath, cacheDir, pageNo: voter.pageNo, firstSerial }))
-          .catch((err) => console.error('photo cut failed:', err.message))
-          .finally(() => photoJobs.delete(key));
-        photoChain.last = job;
-        photoJobs.set(key, job);
-      }
-      await photoJobs.get(key);
-    }
-    if (fs.existsSync(missing) || !fs.existsSync(cached)) return fail(res, 404, 'No photo');
-    res.setHeader('Cache-Control', 'private, max-age=86400');
-    return res.sendFile(path.resolve(cached));
+    const [ran] = await prisma.$queryRaw`SELECT 1 AS x FROM voterdb.photo_runs WHERE document_id = ${voter.documentId}`;
+    if (ran) return fail(res, 404, 'No photo');
+    const pdfPath = findRollPdf(doc);
+    if (!pdfPath) return fail(res, 404, 'No photo');
+    await cutPageQueued({ prisma, pdfPath, documentId: voter.documentId, pageNo: voter.pageNo }).catch((err) => console.error('photo cut failed:', err.message));
+    if (await send()) return undefined;
+    return fail(res, 404, 'No photo');
   })
 );
 
@@ -1285,6 +1239,7 @@ app.use((err, _req, res, _next) => {
 initDb()
   .then(() => {
     const server = app.listen(PORT, () => {
+      startPhotoWorker({ prisma, findRollPdf });
       console.log(`CivicPulse API http://localhost:${PORT}/api`);
       console.log(`DB ${DATABASE_URL.replace(/:[^:@/]+@/, ':***@')}`);
       console.log(`OCR uploads → ${OCR_UPLOAD_DIR}`);
