@@ -3,6 +3,7 @@ const { PrismaClient } = require('@prisma/client');
 const { ensureAuditTable } = require('./lib/audit');
 const { ensureAuthTables } = require('./lib/authStore');
 const { ensureBoothMediaTable } = require('./lib/boothMedia');
+const { ensurePhotoTables } = require('./lib/photos');
 
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
@@ -83,6 +84,7 @@ async function initDb() {
     await ensureAuditTable(prisma);
     await ensureAuthTables(prisma);
     await ensureBoothMediaTable(prisma);
+    await ensurePhotoTables(prisma);
   } catch (err) {
     console.warn('audit table ensure:', err.message);
   }
