@@ -801,7 +801,7 @@ app.get(
 // A voter's photo. Telugu rolls print a photo on every card. The photos are cut out of the PDF once, in the background
 // (lib/photos.js), and kept in the database, so this is only a database read. If a page has not been cut yet, it is cut now.
 const { ensurePhotoTables, cutPageQueued, startPhotoWorker, isTeluguRoll } = require('./lib/photos');
-const { startBoothInfoWorker } = require('./lib/boothMedia');
+const { startBoothInfoWorker, KINDS: BOOTH_PICTURE_KINDS, mediaColumn } = require('./lib/boothMedia');
 
 app.get(
   '/api/voters/:id/photo',
@@ -1103,14 +1103,25 @@ app.get(
       url: `/api/documents/${doc.id}/pages/${n}/image`,
     }));
 
-    const pics = await prisma.$queryRaw`
-      SELECT kind, label, width, height, floor(extract(epoch FROM created_at))::bigint AS v FROM public.booth_media WHERE part_no = ${partNo}`;
-    const order = ['nazri_naksha', 'google_map', 'building_front', 'station_front', 'cad_view', 'key_map'];
-    const pictures = pics
-      .sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind))
-      .map((p) => ({ ...p, v: undefined, url: `/api/booths/${partNo}/media/${p.kind}?v=${p.v}` }));
+    // The pictures and the cover-page details live on the booth row (filled in the background, lib/boothMedia.js).
+    const [stored] = await prisma.$queryRawUnsafe(
+      `SELECT floor(extract(epoch FROM media_updated_at))::bigint AS v, ${BOOTH_PICTURE_KINDS.map((k) => `(${mediaColumn(k.kind)} IS NOT NULL) AS has_${k.kind}`).join(', ')},
+              roll_year, qualifying_date, publication_date, roll_type, main_town, post_office, police_station, mandal, revenue_division,
+              district, pin_code, areas, station_type, auxiliary_stations, roll_serial_start, roll_serial_end, roll_male, roll_female,
+              roll_third, roll_total
+         FROM public.booths WHERE part_no = $1`,
+      partNo
+    );
+    const pictures = BOOTH_PICTURE_KINDS.filter((k) => stored?.[`has_${k.kind}`]).map((k) => ({
+      kind: k.kind,
+      label: k.label,
+      url: `/api/booths/${partNo}/media/${k.kind}?v=${stored.v}`,
+    }));
+    const cover = stored
+      ? Object.fromEntries(Object.entries(stored).filter(([key]) => key !== 'v' && !key.startsWith('has_')))
+      : null;
 
-    ok(res, { ...booth, roads_list: roads, age_bands, roll_info: meta.roll_info || null, media, pictures });
+    ok(res, { ...booth, roads_list: roads, age_bands, roll_info: meta.roll_info || null, media, pictures, cover });
   })
 );
 
@@ -1118,12 +1129,13 @@ app.get(
 app.get(
   '/api/booths/:part/media/:kind',
   asyncHandler(async (req, res) => {
-    const rows = await prisma.$queryRaw`
-      SELECT mime, data FROM public.booth_media WHERE part_no = ${Number(req.params.part)} AND kind = ${String(req.params.kind)}`;
-    if (!rows.length) return fail(res, 404, 'Picture not found');
-    res.setHeader('Content-Type', rows[0].mime);
+    const kind = BOOTH_PICTURE_KINDS.find((k) => k.kind === String(req.params.kind));
+    if (!kind) return fail(res, 404, 'Picture not found');
+    const [row] = await prisma.$queryRawUnsafe(`SELECT ${mediaColumn(kind.kind)} AS data FROM public.booths WHERE part_no = $1`, Number(req.params.part));
+    if (!row?.data) return fail(res, 404, 'Picture not found');
+    res.setHeader('Content-Type', 'image/jpeg');
     res.setHeader('Cache-Control', 'public, max-age=86400');
-    res.send(Buffer.from(rows[0].data));
+    res.send(Buffer.from(row.data));
   })
 );
 

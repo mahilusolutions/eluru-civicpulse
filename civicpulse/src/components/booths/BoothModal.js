@@ -86,6 +86,7 @@ export default function BoothModal({ part, canEdit, onClose, onSaved }) {
 
   const status = boothStatus(booth?.status);
   const roll = booth?.roll_info;
+  const cover = booth?.cover || {};
   const roads = (booth?.roads_list || []).map((r) => ({
     key: String(r.section_no),
     label: niceName(r.section_name),
@@ -145,7 +146,11 @@ export default function BoothModal({ part, canEdit, onClose, onSaved }) {
                     <Row label="Polling station">{stationName(booth.polling_station_name, part)}</Row>
                     <Row label="Address">{booth.polling_station_address}</Row>
                     <Row label="Constituency">{roll?.assembly || `${booth.ac_name} (${booth.ac_code})`}</Row>
-                    <Row label="Place">{[roll?.main_town, roll?.pin_code].filter(Boolean).join(' · ')}</Row>
+                    <Row label="Place">{[cover.main_town || roll?.main_town, cover.pin_code || roll?.pin_code].filter(Boolean).join(' · ')}</Row>
+                    <Row label="Post office">{cover.post_office}</Row>
+                    <Row label="Police station">{cover.police_station}</Row>
+                    <Row label="Mandal · District">{[cover.mandal, cover.district].filter(Boolean).join(' · ')}</Row>
+                    <Row label="Station type">{[cover.station_type, cover.auxiliary_stations != null ? `${cover.auxiliary_stations} auxiliary` : null].filter(Boolean).join(' · ')}</Row>
                     <Row label="Ward">{booth.ward_name ? `${booth.ward_no ? `Ward ${booth.ward_no} · ` : ''}${booth.ward_name}` : null}</Row>
                     <Row label="Booth agent">{booth.agent_name || 'Not assigned'}</Row>
                     <Row label="Coordinator">{booth.coordinator_name || 'Not assigned'}</Row>
@@ -164,7 +169,11 @@ export default function BoothModal({ part, canEdit, onClose, onSaved }) {
                     <Row label="Reached so far">
                       {fmt(booth.reached)} of {fmt(booth.voters)} ({reached}%)
                     </Row>
-                    <Row label="List published">{roll?.publication_date}</Row>
+                    <Row label="List published">{cover.publication_date || roll?.publication_date}</Row>
+                    <Row label="Roll">{[cover.roll_year, cover.roll_type].filter(Boolean).join(' · ')}</Row>
+                    <Row label="Printed on the roll">
+                      {cover.roll_total != null ? `${fmt(cover.roll_total)} voters (${fmt(cover.roll_male)} men · ${fmt(cover.roll_female)} women${cover.roll_third ? ` · ${fmt(cover.roll_third)} third gender` : ''})` : null}
+                    </Row>
                   </dl>
                 </section>
 
