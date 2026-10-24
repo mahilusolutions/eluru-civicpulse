@@ -132,7 +132,7 @@ async function readTeluguStation(pdf) {
     const addrLines = await read('addr', sec4 - 0.068, sec4 - 0.004);
     const nameLine = nameLines.find((l) => /^\d+\s*[-–]/.test(l)) || [...nameLines].sort((x, y) => y.length - x.length)[0] || '';
     // a one- or two-letter scrap at the very end is the table border read as text
-    const name = nameLine.replace(/^[|\s]*\d+\s*[-–]\s*/, '').replace(/(\S+\s+\S+\s+\S+.*?)\s+\S{1,2}$/, '$1').trim();
+    const name = nameLine.replace(/^[|\s]*(?:\d+|\S{1,3})\s*[-–]\s*/, '').replace(/(\S+\s+\S+\s+\S+.*?)\s+\S{1,2}$/, '$1').trim();
     // the label "Polling station address:" is cut off, whatever came before the word చిరునామా
     const address = addrLines.join(' ').replace(/\s+/g, ' ').replace(/^.*?\u0C1A\u0C3F\u0C30\u0C41\u0C28\u0C3E\u0C2E\u0C3E\s*:?\s*/, '').trim();
     // Only text that is mostly Telugu is kept; anything else is a misread and would be worse than the placeholder.
