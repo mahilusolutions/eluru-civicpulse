@@ -114,6 +114,7 @@ async function readTeluguStation(pdf) {
       const file = path.join(work, `${name}.png`);
       await sharp(page).extract({ left: Math.round(0.02 * W), top: Math.round(y0 * H), width: Math.round(0.55 * W), height: Math.round((y1 - y0) * H) }).toFile(file);
       const { stdout } = await niceRun(TESSERACT, [file, 'stdout', ...langArgs, '--psm', '6'], { timeout: 120000, env: { ...process.env, OMP_THREAD_LIMIT: '1' } });
+      if (process.env.DEBUG_STATION) console.log(name, JSON.stringify(stdout));
       return tidy(stdout);
     };
     // The page grows or shrinks with the number of roads listed in section 2, so the rows are found from the table's
