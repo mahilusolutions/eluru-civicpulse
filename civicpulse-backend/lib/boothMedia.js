@@ -62,37 +62,55 @@ async function renderPage(pdf, pageNo, dpi, prefix) {
   return `${prefix}.png`;
 }
 
-/** Cuts the six pictures of page 2 and saves them. Returns how many were saved. */
+// A real picture is tens of KB as a JPEG; a cut-out of blank paper is about 1.5 KB.
+const REAL_PICTURE_BYTES = 4000;
+
+/**
+ * Cuts the six pictures and saves them. They are normally on page 2, but a booth with many roads spills its cover onto
+ * page 2 and the pictures move to page 3 (or 4), so each page is tried and the one with the most real pictures wins.
+ * Returns how many were saved.
+ */
 async function cutBoothPictures({ prisma, partNo, pdf }) {
   const sharp = require('sharp');
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'boothmedia-'));
-  let saved = 0;
+  let best = [];
   try {
-    const page = await renderPage(pdf, 2, 200, path.join(work, 'p'));
-    const { width: W, height: H } = await sharp(page).metadata();
-    for (const k of KINDS) {
-      const left = Math.round(COLS[k.col][0] * W);
-      const top = Math.round(ROWS[k.row][0] * H);
-      const width = Math.round((COLS[k.col][1] - COLS[k.col][0]) * W);
-      const height = Math.round((ROWS[k.row][1] - ROWS[k.row][0]) * H);
+    for (const pageNo of [2, 3, 4]) {
+      let page;
       try {
-        const cell = await sharp(page).extract({ left, top, width, height }).flatten({ background: '#ffffff' }).toBuffer();
-        // Cut away the near-white margin so only the picture is kept.
-        const { data, info } = await sharp(cell).trim({ background: '#ffffff', threshold: 14 }).jpeg({ quality: 88 }).toBuffer({ resolveWithObject: true });
-        if (info.width < 60 || info.height < 60) continue;
-        await prisma.$executeRaw`
-          INSERT INTO public.booth_media (part_no, kind, label, mime, width, height, data)
-          VALUES (${partNo}, ${k.kind}, ${k.label}, 'image/jpeg', ${info.width}, ${info.height}, ${data})
-          ON CONFLICT (part_no, kind) DO UPDATE SET label = EXCLUDED.label, width = EXCLUDED.width, height = EXCLUDED.height, data = EXCLUDED.data, created_at = now()`;
-        saved += 1;
-      } catch (err) {
-        console.warn(`booth ${partNo} ${k.kind}: ${err.message}`);
+        page = await renderPage(pdf, pageNo, 200, path.join(work, `p${pageNo}`));
+      } catch {
+        break; // the roll has no such page
       }
+      const { width: W, height: H } = await sharp(page).metadata();
+      const found = [];
+      for (const k of KINDS) {
+        const left = Math.round(COLS[k.col][0] * W);
+        const top = Math.round(ROWS[k.row][0] * H);
+        const width = Math.round((COLS[k.col][1] - COLS[k.col][0]) * W);
+        const height = Math.round((ROWS[k.row][1] - ROWS[k.row][0]) * H);
+        try {
+          const cell = await sharp(page).extract({ left, top, width, height }).flatten({ background: '#ffffff' }).toBuffer();
+          // Cut away the near-white margin so only the picture is kept.
+          const { data, info } = await sharp(cell).trim({ background: '#ffffff', threshold: 14 }).jpeg({ quality: 88 }).toBuffer({ resolveWithObject: true });
+          if (info.width >= 60 && info.height >= 60 && data.length >= REAL_PICTURE_BYTES) found.push({ k, data, info });
+        } catch (err) {
+          console.warn(`booth ${partNo} ${k.kind}: ${err.message}`);
+        }
+      }
+      if (found.length > best.length) best = found;
+      if (best.length >= 5) break;
     }
   } finally {
     fs.rmSync(work, { recursive: true, force: true });
   }
-  return saved;
+  for (const { k, data, info } of best) {
+    await prisma.$executeRaw`
+      INSERT INTO public.booth_media (part_no, kind, label, mime, width, height, data)
+      VALUES (${partNo}, ${k.kind}, ${k.label}, 'image/jpeg', ${info.width}, ${info.height}, ${data})
+      ON CONFLICT (part_no, kind) DO UPDATE SET label = EXCLUDED.label, width = EXCLUDED.width, height = EXCLUDED.height, data = EXCLUDED.data, created_at = now()`;
+  }
+  return best.length;
 }
 
 // Drops the box-border noise tesseract reads at the end of a line ("BO", "29D") and stray quotes.
