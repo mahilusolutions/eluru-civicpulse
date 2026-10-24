@@ -43,7 +43,7 @@ const seeAll = (to, label = 'See all') => (
 );
 
 export default function DashboardPage() {
-  const { roleLabel } = useAuth();
+  const { roleLabel, fullName } = useAuth();
   const navigate = useNavigate();
   const summary = useApi(getDashboardSummary, []);
   const voters = useApi(() => getVoterStats({}), []);
@@ -71,7 +71,7 @@ export default function DashboardPage() {
   return (
     <section className="w-full space-y-3">
       <PageHeader
-        description={`Hello, ${roleLabel || 'there'}. Here is where the campaign stands today.`}
+        description={`Hello, ${(fullName || roleLabel || 'there').split(' ')[0]}. Here is where the campaign stands today.`}
         actions={
           <>
             <button type="button" onClick={refresh} className={btnTool} aria-label="Refresh">

@@ -1,5 +1,6 @@
 /** Election day: slips printed, votes cast and turnout for every booth. */
 const { logAudit } = require('../lib/audit');
+const { actorOf } = require('../lib/authMiddleware');
 
 module.exports = function registerElectionDay({ app, prisma, ok, fail, asyncHandler }) {
   async function load(partNo = null) {
@@ -65,7 +66,7 @@ module.exports = function registerElectionDay({ app, prisma, ok, fail, asyncHand
         entity: 'election_day',
         entityId: partNo,
         action: 'update',
-        actorRole: req.body?.actor_role,
+        ...actorOf(req),
         summary: `Booth ${partNo}: voted ${current.voted_count} → ${nextVoted}, slips ${current.slip_printed} → ${nextSlip}`,
         before: { voted_count: current.voted_count, slip_printed: current.slip_printed },
         after: { voted_count: nextVoted, slip_printed: nextSlip },

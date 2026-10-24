@@ -187,8 +187,17 @@ OCR_SAVE_DISK=0
 OCR_PUBLIC_BASE=/ocr
 DATABASE_URL=${localDbUrl}
 `;
+  // Keep settings that only live on the server (AUTH_SECRET, CORS_ORIGINS, PUBLIC_URL, ...): never overwrite them.
+  const existingEnv = await new Promise((resolve) => {
+    sftp.readFile(`${REMOTE}/civicpulse-backend/.env`, (err, buf) => resolve(err ? '' : buf.toString('utf8')));
+  });
+  const haveKeys = new Set(apiEnv.split('\n').map((l) => l.split('=')[0].trim()).filter(Boolean));
+  const kept = existingEnv
+    .split('\n')
+    .filter((l) => /^[A-Z_][A-Z0-9_]*=/.test(l) && !haveKeys.has(l.split('=')[0]))
+    .join('\n');
   await new Promise((resolve, reject) => {
-    sftp.writeFile(`${REMOTE}/civicpulse-backend/.env`, apiEnv, (err) => (err ? reject(err) : resolve()));
+    sftp.writeFile(`${REMOTE}/civicpulse-backend/.env`, apiEnv + (kept ? kept + '\n' : ''), (err) => (err ? reject(err) : resolve()));
   });
   await new Promise((resolve, reject) => {
     sftp.writeFile(`${REMOTE}/eluru_voters_data_ocr_extraction/code/.env`, ocrEnv, (err) =>

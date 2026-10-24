@@ -23,11 +23,11 @@ async function ensureAuditTable(prisma) {
 }
 
 /** action: create | update | delete. Never throws — a logging fault must not block the real change. */
-async function logAudit(prisma, { entity, entityId, action, actorRole, summary, before, after }) {
+async function logAudit(prisma, { entity, entityId, action, actorRole, actorUser, summary, before, after }) {
   try {
     await prisma.$executeRaw`
-      INSERT INTO public.audit_log (entity, entity_id, action, actor_role, summary, before_data, after_data)
-      VALUES (${entity}, ${entityId != null ? BigInt(entityId) : null}, ${action}, ${actorRole || null}, ${summary || null},
+      INSERT INTO public.audit_log (entity, entity_id, action, actor_role, actor_user, summary, before_data, after_data)
+      VALUES (${entity}, ${entityId != null ? BigInt(entityId) : null}, ${action}, ${actorRole || null}, ${actorUser || null}, ${summary || null},
               ${before == null ? null : json(before)}::jsonb, ${after == null ? null : json(after)}::jsonb)`;
   } catch (err) {
     console.error('audit log failed:', err.message);

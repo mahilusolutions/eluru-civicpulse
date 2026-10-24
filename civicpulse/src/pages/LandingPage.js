@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Navigate } from 'react-router-dom';
+import { Link, Navigate } from 'react-router-dom';
 import {
   ArrowRight,
   Building2,
@@ -602,6 +602,12 @@ export default function LandingPage() {
               compact
               className="h-9 w-9 justify-center border-white/25 bg-transparent px-0 text-white hover:border-white/50 hover:bg-white/10"
             />
+            <Link
+              to="/request-access"
+              className="hidden h-9 items-center rounded-lg border border-white/25 px-3.5 text-sm font-semibold text-white transition hover:bg-white/10 sm:inline-flex"
+            >
+              Request access
+            </Link>
             <a
               href="#login"
               className="inline-flex h-9 items-center rounded-lg bg-white px-3.5 text-sm font-semibold text-[#0F1B2D] transition hover:-translate-y-px hover:bg-eluru-gold"
@@ -678,12 +684,18 @@ export default function LandingPage() {
                 Open the workspace
                 <ArrowRight className="h-4 w-4 transition group-hover:translate-x-1" />
               </a>
-              <a
-                href="#pipeline"
+              <Link
+                to="/request-access"
                 className="inline-flex items-center gap-2 rounded-xl border border-white/20 bg-white/5 px-5 py-3 text-sm font-semibold text-white backdrop-blur transition hover:bg-white/10"
               >
-                See how it works
-              </a>
+                Request access
+              </Link>
+              <Link
+                to="/request-status"
+                className="inline-flex items-center gap-2 rounded-xl px-3 py-3 text-sm font-semibold text-white/80 underline-offset-4 transition hover:text-white hover:underline"
+              >
+                Check request status
+              </Link>
             </div>
 
             <div
@@ -996,6 +1008,9 @@ export default function LandingPage() {
               Sign in now
               <ArrowRight className="h-4 w-4 transition group-hover:translate-x-1" />
             </a>
+            <Link to="/request-access" className="ml-3 inline-flex items-center rounded-xl px-3 py-3.5 text-sm font-semibold text-[var(--brand)] hover:underline">
+              Don’t have an account? Request access
+            </Link>
           </Reveal>
         </div>
       </section>

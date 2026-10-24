@@ -2,13 +2,18 @@ import { Suspense } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AuthProvider } from './auth/AuthContext';
 import RoleGuard from './components/RoleGuard';
-import { RouteSkeleton } from './components/ui/PageSkeleton';
+import PageSkeleton, { RouteSkeleton } from './components/ui/PageSkeleton';
 import AppShell from './layout/AppShell';
 import LandingPage from './pages/LandingPage';
 import { ThemeProvider } from './theme/ThemeContext';
 import lazyPage from './utils/lazyPage';
 
 // The landing page loads with the app so it shows at once; every other page downloads only when opened.
+const SignInPage = lazyPage(() => import('./pages/SignInPage'));
+const RequestAccessPage = lazyPage(() => import('./pages/RequestAccessPage'));
+const RequestStatusPage = lazyPage(() => import('./pages/RequestStatusPage'));
+const ChangePasswordPage = lazyPage(() => import('./pages/ChangePasswordPage'));
+const AccessPage = lazyPage(() => import('./pages/AccessPage'));
 const DashboardPage = lazyPage(() => import('./pages/DashboardPage'));
 const VotersPage = lazyPage(() => import('./pages/VotersPage'));
 const BoothsPage = lazyPage(() => import('./pages/BoothsPage'));
@@ -32,6 +37,11 @@ function guarded(path, element) {
   );
 }
 
+// Public screens (sign in, request access, status) use the plain skeleton while their file loads.
+function open(element) {
+  return <Suspense fallback={<PageSkeleton />}>{element}</Suspense>;
+}
+
 export default function App() {
   return (
     <ThemeProvider>
@@ -39,6 +49,10 @@ export default function App() {
         <BrowserRouter>
           <Routes>
             <Route path="/" element={<LandingPage />} />
+            <Route path="/login" element={open(<SignInPage />)} />
+            <Route path="/request-access" element={open(<RequestAccessPage />)} />
+            <Route path="/request-status" element={open(<RequestStatusPage />)} />
+            <Route path="/change-password" element={open(<ChangePasswordPage />)} />
             <Route path="/app" element={<AppShell />}>
               <Route index element={<Navigate to="dashboard" replace />} />
               <Route path="dashboard" element={guarded('/app/dashboard', <DashboardPage />)} />
@@ -53,6 +67,7 @@ export default function App() {
               <Route path="map" element={guarded('/app/map', <MapPage />)} />
               <Route path="team" element={guarded('/app/team', <TeamPage />)} />
               <Route path="reports" element={guarded('/app/reports', <ReportsPage />)} />
+              <Route path="access" element={guarded('/app/access', <AccessPage />)} />
               <Route path="data" element={guarded('/app/data', <DataPage />)} />
               <Route path="settings" element={guarded('/app/settings', <SettingsPage />)} />
             </Route>

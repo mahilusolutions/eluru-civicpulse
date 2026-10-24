@@ -1,4 +1,5 @@
 const { logAudit } = require('../lib/audit');
+const { actorOf } = require('../lib/authMiddleware');
 
 /** Outreach: every contact made with a voter (visit, call, WhatsApp, SMS, event). */
 const TYPE_IN = {
@@ -97,7 +98,7 @@ module.exports = function registerOutreach({ app, prisma, Prisma, ok, fail, asyn
   app.post(
     '/api/outreach',
     asyncHandler(async (req, res) => {
-      const { voter_id, type, outcome, notes, created_by_role } = req.body || {};
+      const { voter_id, type, outcome, notes } = req.body || {};
       if (!voter_id || !type) return fail(res, 400, 'Choose a voter and how you reached them');
       const mapped = TYPE_IN[String(type).toLowerCase()];
       if (!mapped) return fail(res, 400, 'Invalid type');
@@ -111,7 +112,7 @@ module.exports = function registerOutreach({ app, prisma, Prisma, ok, fail, asyn
           type: mapped,
           outcome: outcome ? String(outcome).slice(0, 80) : null,
           notes: notes ? String(notes).slice(0, 500) : null,
-          createdByRole: created_by_role || null,
+          createdByRole: req.auth.user.role,
         },
       });
 
@@ -119,7 +120,7 @@ module.exports = function registerOutreach({ app, prisma, Prisma, ok, fail, asyn
         entity: 'outreach',
         entityId: row.id,
         action: 'create',
-        actorRole: created_by_role,
+        ...actorOf(req),
         summary: `Logged ${TYPE_OUT[row.type]} contact${row.outcome ? ` (${row.outcome})` : ''}`,
         after: row,
       });
@@ -141,7 +142,7 @@ module.exports = function registerOutreach({ app, prisma, Prisma, ok, fail, asyn
     '/api/outreach/:id',
     asyncHandler(async (req, res) => {
       const id = BigInt(req.params.id);
-      const { type, outcome, notes, actor_role } = req.body || {};
+      const { type, outcome, notes } = req.body || {};
       const old = await prisma.outreach.findUnique({ where: { id } });
       if (!old) return fail(res, 404, 'Contact not found');
       const data = {};
@@ -161,7 +162,7 @@ module.exports = function registerOutreach({ app, prisma, Prisma, ok, fail, asyn
         entity: 'outreach',
         entityId: id,
         action: 'update',
-        actorRole: actor_role,
+        ...actorOf(req),
         summary: changed.length ? `Edited ${changed.join(', ')}` : 'Saved with no changes',
         before,
         after,
@@ -181,7 +182,7 @@ module.exports = function registerOutreach({ app, prisma, Prisma, ok, fail, asyn
         entity: 'outreach',
         entityId: id,
         action: 'delete',
-        actorRole: req.query.actor_role,
+        ...actorOf(req),
         summary: `Deleted ${TYPE_OUT[old.type] || old.type} contact`,
         before: snapshot(old),
       });

@@ -1,7 +1,8 @@
-import { Navigate, Outlet } from 'react-router-dom';
+import { Navigate, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import Sidebar from '../components/Sidebar';
 import TopBar from '../components/TopBar';
+import PageSkeleton from '../components/ui/PageSkeleton';
 import { SidebarProvider, useSidebar } from './SidebarContext';
 
 function ShellFrame() {
@@ -28,10 +29,22 @@ function ShellFrame() {
 }
 
 export default function AppShell() {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, loading, mustChangePassword } = useAuth();
+  const location = useLocation();
 
+  // Asking the server who is signed in (a moment on first load).
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[var(--bg)] p-4">
+        <PageSkeleton variant="dashboard" />
+      </div>
+    );
+  }
   if (!isAuthenticated) {
-    return <Navigate to="/" replace />;
+    return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
+  }
+  if (mustChangePassword) {
+    return <Navigate to="/change-password" replace />;
   }
 
   return (

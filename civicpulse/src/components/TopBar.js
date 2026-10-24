@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   ChevronDown,
+  KeyRound,
   LogOut,
   Menu,
   Search,
@@ -9,14 +10,14 @@ import {
 } from 'lucide-react';
 import { getVoters } from '../api/voters';
 import { useAuth } from '../auth/AuthContext';
-import { NAV_ITEMS, ROLE_OPTIONS } from '../auth/roles';
+import { NAV_ITEMS } from '../auth/roles';
 import { useSidebar } from '../layout/SidebarContext';
 import ThemeToggle from './ThemeToggle';
 import VoterModal from './voters/VoterModal';
 import { niceName } from '../utils/voterFormat';
 
 export default function TopBar() {
-  const { role, roleLabel, login, logout } = useAuth();
+  const { roleLabel, fullName, username, logout } = useAuth();
   const { openMobile } = useSidebar();
   const location = useLocation();
   const navigate = useNavigate();
@@ -96,13 +97,12 @@ export default function TopBar() {
   function handleLogout() {
     setMenuOpen(false);
     logout();
-    navigate('/');
+    navigate('/login', { replace: true });
   }
 
-  function handleRoleChange(event) {
-    login(event.target.value);
+  function handleChangePassword() {
     setMenuOpen(false);
-    navigate('/app/dashboard');
+    navigate('/change-password');
   }
 
   return (
@@ -194,14 +194,14 @@ export default function TopBar() {
             className="inline-flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--bg)] py-1.5 pl-1.5 pr-2.5 text-left transition hover:border-[var(--brand)]"
           >
             <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--brand)] text-xs font-bold text-white">
-              {(roleLabel || 'U').slice(0, 1)}
+              {(fullName || username || 'U').trim().slice(0, 1).toUpperCase()}
             </span>
             <span className="hidden min-w-0 sm:block">
               <span className="block truncate text-xs font-bold text-[var(--ink)]">
-                {roleLabel}
+                {fullName || username}
               </span>
               <span className="block truncate text-[10px] text-[var(--muted)]">
-                Mahilu · Eluru
+                {roleLabel}
               </span>
             </span>
             <ChevronDown className="h-3.5 w-3.5 text-[var(--muted)]" />
@@ -216,32 +216,25 @@ export default function TopBar() {
                 onClick={() => setMenuOpen(false)}
               />
               <div className="absolute right-0 top-[calc(100%+8px)] z-40 w-64 rounded-2xl border border-[var(--line)] bg-[var(--bg-elevated)] p-2 shadow-soft">
-                <div className="mb-2 rounded-xl bg-[var(--bg-muted)] px-3 py-2">
+                <div className="mb-2 rounded-xl bg-[var(--bg-muted)] px-3 py-2.5">
                   <div className="flex items-center gap-2">
-                    <UserRound className="h-4 w-4 text-[var(--brand)]" />
-                    <div>
-                      <p className="text-sm font-bold">{roleLabel}</p>
-                      <p className="text-[11px] text-[var(--muted)]">
-                        Signed in for Eluru
-                      </p>
+                    <UserRound className="h-4 w-4 shrink-0 text-[var(--brand)]" />
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-bold">{fullName || username}</p>
+                      <p className="truncate font-mono text-[11px] text-[var(--muted)]">{username}</p>
                     </div>
                   </div>
+                  <p className="mt-2 inline-flex rounded-full bg-[var(--bg-elevated)] px-2.5 py-0.5 text-[11px] font-semibold text-[var(--brand)] ring-1 ring-[var(--line)]">{roleLabel}</p>
                 </div>
 
-                <label className="mb-1 block px-2 text-[10px] font-bold uppercase tracking-[0.12em] text-[var(--muted)]">
-                  Switch role
-                </label>
-                <select
-                  value={role || ''}
-                  onChange={handleRoleChange}
-                  className="mb-2 w-full rounded-xl border border-[var(--line)] bg-[var(--bg)] px-3 py-2 text-sm font-semibold outline-none focus:border-[var(--brand)]"
+                <button
+                  type="button"
+                  onClick={handleChangePassword}
+                  className="mb-1 inline-flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-semibold text-[var(--ink-soft)] transition hover:bg-[var(--bg-muted)]"
                 >
-                  {ROLE_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
+                  <KeyRound className="h-4 w-4" />
+                  Change password
+                </button>
 
                 <button
                   type="button"

@@ -164,3 +164,116 @@ model Setting {
   @@map("settings")
   @@schema("public")
 }
+
+// ---------- sign-in, access requests, history log, booth pictures ----------
+// (Also created at start-up by lib/authStore.js, lib/audit.js and lib/boothMedia.js.)
+
+model AppUser {
+  id                 BigInt    @id @default(autoincrement())
+  username           String    @unique(map: "app_users_username_key") // always stored in lower case
+  fullName           String    @map("full_name")
+  mobile             String?
+  email              String?
+  role               String
+  passwordHash       String    @map("password_hash")
+  mustChangePassword Boolean   @default(true) @map("must_change_password")
+  status             String    @default("active")
+  failedAttempts     Int       @default(0) @map("failed_attempts")
+  lockedUntil        DateTime? @map("locked_until") @db.Timestamptz(6)
+  lastLoginAt        DateTime? @map("last_login_at") @db.Timestamptz(6)
+  passwordChangedAt  DateTime? @map("password_changed_at") @db.Timestamptz(6)
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdBy          BigInt?   @map("created_by")
+  requestId          BigInt?   @map("request_id")
+
+  sessions AuthSession[]
+
+  @@index([mobile], map: "idx_app_users_mobile")
+  @@map("app_users")
+  @@schema("public")
+}
+
+model AuthSession {
+  id         BigInt    @id @default(autoincrement())
+  userId     BigInt    @map("user_id")
+  tokenHash  String    @unique @map("token_hash")
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  lastSeenAt DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(6)
+  ip         String?
+  userAgent  String?   @map("user_agent")
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(6)
+
+  user AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId], map: "idx_auth_sessions_user")
+  @@index([expiresAt], map: "idx_auth_sessions_expires")
+  @@map("auth_sessions")
+  @@schema("public")
+}
+
+model AccessRequest {
+  id                   BigInt    @id @default(autoincrement())
+  reference            String    @unique
+  fullName             String    @map("full_name")
+  mobile               String
+  email                String?
+  designation          String
+  area                 String
+  requestedRole        String    @map("requested_role")
+  voterId              String?   @map("voter_id")
+  reason               String
+  referredBy           String?   @map("referred_by")
+  status               String    @default("pending")
+  adminNote            String?   @map("admin_note")
+  decidedBy            BigInt?   @map("decided_by")
+  decidedAt            DateTime? @map("decided_at") @db.Timestamptz(6)
+  userId               BigInt?   @map("user_id")
+  credentialCipher     String?   @map("credential_cipher")
+  credentialExpiresAt  DateTime? @map("credential_expires_at") @db.Timestamptz(6)
+  credentialRevealedAt DateTime? @map("credential_revealed_at") @db.Timestamptz(6)
+  statusAttempts       Int       @default(0) @map("status_attempts")
+  statusLockedUntil    DateTime? @map("status_locked_until") @db.Timestamptz(6)
+  ip                   String?
+  userAgent            String?   @map("user_agent")
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([status, createdAt(sort: Desc)], map: "idx_access_requests_status")
+  @@index([mobile], map: "idx_access_requests_mobile")
+  @@map("access_requests")
+  @@schema("public")
+}
+
+model AuditLog {
+  id         BigInt   @id @default(autoincrement())
+  entity     String
+  entityId   BigInt?  @map("entity_id")
+  action     String
+  actorRole  String?  @map("actor_role")
+  actorUser  String?  @map("actor_user")
+  summary    String?
+  beforeData Json?    @map("before_data") @db.JsonB
+  afterData  Json?    @map("after_data") @db.JsonB
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([entity, entityId, createdAt(sort: Desc)], map: "idx_audit_entity")
+  @@index([createdAt(sort: Desc)], map: "idx_audit_created")
+  @@map("audit_log")
+  @@schema("public")
+}
+
+model BoothMedia {
+  partNo    Int      @map("part_no")
+  kind      String
+  label     String
+  mime      String   @default("image/jpeg")
+  width     Int?
+  height    Int?
+  data      Bytes
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@id([partNo, kind])
+  @@index([partNo], map: "idx_booth_media_part")
+  @@map("booth_media")
+  @@schema("public")
+}

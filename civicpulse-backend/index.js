@@ -13,11 +13,22 @@ const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const { responseCache } = require('./lib/cache');
 const { logAudit } = require('./lib/audit');
+const { createAuth, actorOf, allowedOrigins } = require('./lib/authMiddleware');
 
 /** House number and address note as separate fields (the roll mixes them in one). */
 function houseFields(raw) {
   const { number, note } = splitHouse(raw);
   return { house_number: number, address_note: note };
+}
+
+// Needed for the one-time login hand-over. Production refuses to start without it; local development makes a temporary one.
+if (!/^[0-9a-f]{64}$/i.test(process.env.AUTH_SECRET || '')) {
+  if (process.env.NODE_ENV === 'production') {
+    console.error('AUTH_SECRET is missing or not 64 hex characters. Run: node scripts/generateSecret.js and add AUTH_SECRET=... to .env');
+    process.exit(1);
+  }
+  process.env.AUTH_SECRET = require('crypto').randomBytes(32).toString('hex');
+  console.warn('AUTH_SECRET not set: using a temporary one (pending logins will not survive a restart). Fine for development.');
 }
 
 const app = express();
@@ -84,8 +95,7 @@ app.use((_req, res, next) => {
   next();
 });
 // CORS_ORIGINS="https://eluru.mahilusolutions.com,https://other" locks the API to those sites (default: any, for local dev).
-const corsOrigins = (process.env.CORS_ORIGINS || '').split(',').map((o) => o.trim()).filter(Boolean);
-app.use(cors(corsOrigins.length ? { origin: corsOrigins } : undefined));
+app.use(cors({ origin: allowedOrigins(), credentials: true })); // with no listed origins the API answers only its own site
 // ~1000 people on one office/mobile network can share an IP, so the ceiling is generous; it only stops runaway clients.
 app.use(
   '/api',
@@ -98,6 +108,11 @@ app.use(
   })
 );
 app.use(express.json({ limit: '2mb' }));
+
+// ---- Sign-in: every /api call (except sign-in and the public request pages) needs a live session and the right role.
+const auth = createAuth({ prisma, fail });
+app.use('/api', auth.loadSession);
+app.use('/api', auth.gate);
 app.use(responseCache);
 app.get('/api/health', asyncHandler(async (_req, res) => {
   await prisma.$queryRaw`SELECT 1`;
@@ -957,7 +972,7 @@ app.patch(
         entity: 'voter',
         entityId: id,
         action: 'update',
-        actorRole: b.actor_role,
+        ...actorOf(req),
         summary: `Edited ${Object.keys(after).join(', ')}`,
         before,
         after,
@@ -1137,6 +1152,9 @@ app.patch(
 );
 
 // ---------- Page routes (one module per page) ----------
+require('./routes/auth')({ app, prisma, fail, ok, asyncHandler, auth });
+require('./routes/access')({ app, prisma, fail, ok, asyncHandler, auth });
+
 require('./routes')({
   app,
   prisma,

@@ -1,6 +1,7 @@
 const path = require('path');
 const { PrismaClient } = require('@prisma/client');
 const { ensureAuditTable } = require('./lib/audit');
+const { ensureAuthTables } = require('./lib/authStore');
 const { ensureBoothMediaTable } = require('./lib/boothMedia');
 
 require('dotenv').config({ path: path.join(__dirname, '.env') });
@@ -80,6 +81,7 @@ async function initDb() {
   try {
     await prisma.$executeRawUnsafe('ALTER TABLE public.outreach ADD COLUMN IF NOT EXISTS updated_at timestamptz');
     await ensureAuditTable(prisma);
+    await ensureAuthTables(prisma);
     await ensureBoothMediaTable(prisma);
   } catch (err) {
     console.warn('audit table ensure:', err.message);

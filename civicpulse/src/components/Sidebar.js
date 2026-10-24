@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import {
   BarChart3,
@@ -15,9 +16,11 @@ import {
   PanelLeftOpen,
   Search,
   Settings,
+  UserPlus,
   Users,
   X,
 } from 'lucide-react';
+import { getRequestSummary } from '../api/access';
 import { useAuth } from '../auth/AuthContext';
 import { getGroupedNavForRole } from '../auth/roles';
 import { useSidebar } from '../layout/SidebarContext';
@@ -35,6 +38,7 @@ const ICONS = {
   Flag,
   Map,
   Users,
+  UserPlus,
   FileBarChart: BarChart3,
   Database,
   Settings,
@@ -57,8 +61,31 @@ function Tooltip({ label, show, children }) {
   );
 }
 
+/** How many access requests are waiting (Super Admin only). Refreshes every minute and whenever the page reports a change. */
+function usePendingRequests(enabled) {
+  const [count, setCount] = useState(0);
+  const load = useCallback(() => {
+    if (!enabled) return;
+    getRequestSummary()
+      .then((s) => setCount(s?.pending || 0))
+      .catch(() => {});
+  }, [enabled]);
+  useEffect(() => {
+    load();
+    if (!enabled) return undefined;
+    const timer = setInterval(load, 60000);
+    window.addEventListener('civicpulse:requests-changed', load);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('civicpulse:requests-changed', load);
+    };
+  }, [enabled, load]);
+  return count;
+}
+
 function SidebarPanel({ onNavigate, forceExpanded = false }) {
   const { role } = useAuth();
+  const pending = usePendingRequests(role === 'super_admin');
   const { collapsed, toggleCollapsed } = useSidebar();
   const groups = getGroupedNavForRole(role);
   const isCollapsed = forceExpanded ? false : collapsed;
@@ -125,8 +152,18 @@ function SidebarPanel({ onNavigate, forceExpanded = false }) {
                       }`
                     }
                   >
-                    <NavIcon name={item.icon} />
+                    <span className="relative">
+                      <NavIcon name={item.icon} />
+                      {item.path === '/app/access' && pending > 0 && isCollapsed ? (
+                        <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-red-500 ring-2 ring-[var(--bg-elevated)]" />
+                      ) : null}
+                    </span>
                     {!isCollapsed ? <span>{item.label}</span> : null}
+                    {item.path === '/app/access' && pending > 0 && !isCollapsed ? (
+                      <span className="ml-auto inline-flex min-w-[1.35rem] items-center justify-center rounded-full bg-red-500 px-1.5 py-0.5 text-[11px] font-bold leading-none text-white">
+                        {pending > 99 ? '99+' : pending}
+                      </span>
+                    ) : null}
                   </NavLink>
                 </Tooltip>
               ))}
