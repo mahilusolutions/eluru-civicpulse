@@ -823,6 +823,7 @@ app.get(
 // A voter's photo. Telugu rolls print a photo on every card. The photos are cut out of the PDF once, in the background
 // (lib/photos.js), and kept in the database, so this is only a database read. If a page has not been cut yet, it is cut now.
 const { ensurePhotoTables, cutPageQueued, startPhotoWorker, isTeluguRoll } = require('./lib/photos');
+const { startBoothInfoWorker } = require('./lib/boothMedia');
 
 app.get(
   '/api/voters/:id/photo',
@@ -1240,6 +1241,7 @@ initDb()
   .then(() => {
     const server = app.listen(PORT, () => {
       startPhotoWorker({ prisma, findRollPdf });
+      startBoothInfoWorker({ prisma, findRollPdf, isTeluguRoll });
       console.log(`CivicPulse API http://localhost:${PORT}/api`);
       console.log(`DB ${DATABASE_URL.replace(/:[^:@/]+@/, ':***@')}`);
       console.log(`OCR uploads → ${OCR_UPLOAD_DIR}`);
