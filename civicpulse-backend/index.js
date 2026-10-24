@@ -829,11 +829,11 @@ app.get(
   asyncHandler(async (req, res) => {
     const id = BigInt(req.params.id);
     const send = async () => {
-      const [row] = await prisma.$queryRaw`SELECT mime, data FROM voterdb.elector_photos WHERE elector_id = ${id}`;
+      const [row] = await prisma.$queryRaw`SELECT photo FROM voterdb.electors WHERE id = ${id} AND photo IS NOT NULL`;
       if (!row) return false;
-      res.setHeader('Content-Type', row.mime);
+      res.setHeader('Content-Type', 'image/jpeg');
       res.setHeader('Cache-Control', 'private, max-age=604800, immutable');
-      res.end(Buffer.from(row.data));
+      res.end(Buffer.from(row.photo));
       return true;
     };
     if (await send()) return undefined;
@@ -842,8 +842,8 @@ app.get(
     if (!voter?.documentId || voter.pageNo == null) return fail(res, 404, 'No photo');
     const doc = await prisma.extractedDocument.findUnique({ where: { id: voter.documentId }, select: { filename: true, storagePath: true } });
     if (!doc || !isTeluguRoll(doc.filename)) return fail(res, 404, 'No photo');
-    const [ran] = await prisma.$queryRaw`SELECT 1 AS x FROM voterdb.photo_runs WHERE document_id = ${voter.documentId}`;
-    if (ran) return fail(res, 404, 'No photo');
+    const [seen] = await prisma.$queryRaw`SELECT photo_done FROM voterdb.electors WHERE id = ${id}`;
+    if (seen?.photo_done) return fail(res, 404, 'No photo');
     const pdfPath = findRollPdf(doc);
     if (!pdfPath) return fail(res, 404, 'No photo');
     await cutPageQueued({ prisma, pdfPath, documentId: voter.documentId, pageNo: voter.pageNo }).catch((err) => console.error('photo cut failed:', err.message));

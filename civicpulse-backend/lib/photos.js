@@ -19,20 +19,10 @@ const CARD_ROW_TOP = [0.034, 0.1285, 0.2225, 0.317, 0.411, 0.505, 0.5995, 0.6935
 
 const isTeluguRoll = (filename) => /[-_]TEL[-_]\d+/i.test(String(filename || ''));
 
+// Photos live on the voter row itself: photo (the image) and photo_done (this voter's card has been looked at).
 async function ensurePhotoTables(prisma) {
-  await prisma.$executeRawUnsafe(`
-    CREATE TABLE IF NOT EXISTS voterdb.elector_photos (
-      elector_id bigint PRIMARY KEY REFERENCES voterdb.electors(id) ON DELETE CASCADE,
-      mime       text NOT NULL DEFAULT 'image/jpeg',
-      data       bytea NOT NULL,
-      created_at timestamptz NOT NULL DEFAULT now()
-    )`);
-  await prisma.$executeRawUnsafe(`
-    CREATE TABLE IF NOT EXISTS voterdb.photo_runs (
-      document_id bigint PRIMARY KEY REFERENCES voterdb.extracted_documents(id) ON DELETE CASCADE,
-      photos      int NOT NULL DEFAULT 0,
-      done_at     timestamptz NOT NULL DEFAULT now()
-    )`);
+  await prisma.$executeRawUnsafe('ALTER TABLE voterdb.electors ADD COLUMN IF NOT EXISTS photo bytea');
+  await prisma.$executeRawUnsafe('ALTER TABLE voterdb.electors ADD COLUMN IF NOT EXISTS photo_done boolean NOT NULL DEFAULT false');
 }
 
 /**
@@ -73,11 +63,10 @@ async function cutPagePhotos({ prisma, pdfPath, documentId, pageNo }) {
       const stats = await sharp(crop).stats();
       const spread = stats.channels.reduce((sum, c) => sum + c.stdev, 0) / stats.channels.length;
       if (spread < 22) continue; // an empty frame is almost one flat colour; a real photo is not
-      await prisma.$executeRaw`
-        INSERT INTO voterdb.elector_photos (elector_id, mime, data) VALUES (${electorId}, 'image/jpeg', ${crop})
-        ON CONFLICT (elector_id) DO UPDATE SET data = EXCLUDED.data, mime = EXCLUDED.mime, created_at = now()`;
+      await prisma.$executeRaw`UPDATE voterdb.electors SET photo = ${crop} WHERE id = ${electorId}`;
       saved += 1;
     }
+    await prisma.$executeRaw`UPDATE voterdb.electors SET photo_done = true WHERE document_id = ${documentId} AND page_no = ${pageNo}`;
   } finally {
     try {
       require('fs').rmSync(png, { force: true });
@@ -119,21 +108,22 @@ function startPhotoWorker({ prisma, findRollPdf, intervalMs = 20000, log = conso
         JOIN voterdb.roll_files r ON r.document_id = d.id
         WHERE r.parse_status::text = 'ready'
           AND d.filename ~* '[-_]TEL[-_][0-9]+'
-          AND NOT EXISTS (SELECT 1 FROM voterdb.photo_runs pr WHERE pr.document_id = d.id)
+          AND EXISTS (SELECT 1 FROM voterdb.electors e WHERE e.document_id = d.id AND NOT e.photo_done)
         ORDER BY d.id LIMIT 1`;
       if (!doc) return;
       const pdfPath = findRollPdf({ storagePath: doc.storage_path, filename: doc.filename });
       let photos = 0;
-      if (pdfPath) {
-        const pages = await prisma.$queryRaw`SELECT DISTINCT page_no FROM voterdb.electors WHERE document_id = ${doc.id} AND page_no IS NOT NULL ORDER BY page_no`;
+      if (!pdfPath) {
+        // PDF missing on disk: mark as looked at so the worker does not retry it every tick
+        await prisma.$executeRaw`UPDATE voterdb.electors SET photo_done = true WHERE document_id = ${doc.id}`;
+      } else {
+        const pages = await prisma.$queryRaw`SELECT DISTINCT page_no FROM voterdb.electors WHERE document_id = ${doc.id} AND page_no IS NOT NULL AND NOT photo_done ORDER BY page_no`;
         for (const p of pages) {
           photos += await cutPageQueued({ prisma, pdfPath, documentId: doc.id, pageNo: p.page_no });
           await sleep(150);
         }
       }
-      await prisma.$executeRaw`
-        INSERT INTO voterdb.photo_runs (document_id, photos) VALUES (${doc.id}, ${photos})
-        ON CONFLICT (document_id) DO UPDATE SET photos = EXCLUDED.photos, done_at = now()`;
+      await prisma.$executeRaw`UPDATE voterdb.electors SET photo_done = true WHERE document_id = ${doc.id} AND page_no IS NULL`;
       log.log(`photos: ${doc.filename} -> ${photos} saved`);
     } catch (err) {
       log.error('photo worker:', err.message);
