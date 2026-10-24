@@ -680,6 +680,7 @@ app.get(
     });
 
     let roll_info = null;
+    let has_photo = false;
     let page_image_url = null;
     let cover_pages = [];
     if (voter.documentId) {
@@ -689,6 +690,7 @@ app.get(
       });
       const meta = doc?.rawMeta && typeof doc.rawMeta === 'object' ? doc.rawMeta : {};
       roll_info = meta.roll_info || null;
+      has_photo = isTeluguRoll(doc?.filename);
       if (doc?.filename && voter.pageNo != null) {
         const img = pageImagePath(doc.filename, voter.pageNo);
         if (img) page_image_url = `/api/documents/${doc.id}/pages/${voter.pageNo}/image`;
@@ -738,6 +740,7 @@ app.get(
       ...voter,
       booth,
       card_image_url: voter.documentId && voter.pageNo != null ? `/api/voters/${voter.id}/card-image` : null,
+      photo_url: has_photo ? `/api/voters/${voter.id}/photo` : null,
       ...houseFields(voter.houseNo),
       household,
       outreach,
@@ -816,6 +819,73 @@ app.get(
       if (!fs.existsSync(cached)) return fail(res, 404, 'Card image not available');
     }
     res.setHeader('Cache-Control', 'public, max-age=86400');
+    return res.sendFile(path.resolve(cached));
+  })
+);
+
+// A voter's photo, cut out of their printed card. Telugu rolls print a photo on every card; the English rolls only say "Photo Available".
+const isTeluguRoll = (filename) => /[-_]TEL[-_]\d+/i.test(String(filename || ''));
+app.get(
+  '/api/voters/:id/photo',
+  asyncHandler(async (req, res) => {
+    const voter = await prisma.elector.findUnique({
+      where: { id: BigInt(req.params.id) },
+      select: { documentId: true, pageNo: true, serialNo: true },
+    });
+    if (!voter?.documentId || voter.pageNo == null) return fail(res, 404, 'No photo');
+    const doc = await prisma.extractedDocument.findUnique({ where: { id: voter.documentId }, select: { filename: true, storagePath: true } });
+    if (!doc || !isTeluguRoll(doc.filename)) return fail(res, 404, 'No photo');
+
+    const cacheDir = path.join(OCR_PAGE_IMAGES_DIR, path.parse(doc.filename).name);
+    const cached = path.join(cacheDir, `photo-${voter.serialNo}.jpg`);
+    const missing = path.join(cacheDir, `photo-${voter.serialNo}.none`); // remembers "this card has no picture"
+    if (fs.existsSync(missing)) return fail(res, 404, 'No photo');
+
+    if (!fs.existsSync(cached)) {
+      const pdfPath = findRollPdf(doc);
+      if (!pdfPath) return fail(res, 404, 'No photo');
+      const first = await prisma.$queryRaw`
+        SELECT MIN(serial_no)::int AS n FROM voterdb.electors WHERE document_id = ${voter.documentId} AND page_no = ${voter.pageNo}`;
+      const slot = voter.serialNo - (first[0]?.n ?? voter.serialNo);
+      if (slot < 0 || slot > 29) return fail(res, 404, 'No photo');
+
+      const pdftoppm = findPdftoppm();
+      const dpi = 200;
+      const size = pdfPageSize(pdftoppm, pdfPath);
+      const pxW = (size.w * dpi) / 72;
+      const pxH = (size.h * dpi) / 72;
+      const cardX = (CARD_COL_LEFT[slot % 3] - 0.004) * pxW;
+      const cardY = (CARD_ROW_TOP[Math.floor(slot / 3)] - 0.003) * pxH;
+      const cardW = 0.318 * pxW;
+      const cardH = 0.096 * pxH;
+      // the photo frame sits at the right of the card
+      const x = Math.round(cardX + cardW * 0.752);
+      const y = Math.round(cardY + cardH * 0.215);
+      const w = Math.round(cardW * 0.213);
+      const h = Math.round(cardH * 0.575);
+
+      fs.mkdirSync(cacheDir, { recursive: true });
+      const { spawnSync } = require('child_process');
+      spawnSync(
+        pdftoppm,
+        ['-jpeg', '-r', String(dpi), '-f', String(voter.pageNo), '-l', String(voter.pageNo), '-x', String(x), '-y', String(y), '-W', String(w), '-H', String(h), '-singlefile', pdfPath, path.join(cacheDir, `photo-${voter.serialNo}`)],
+        { windowsHide: true, timeout: 60000 }
+      );
+      if (!fs.existsSync(cached)) return fail(res, 404, 'No photo');
+      // An empty frame (text only) is almost one flat colour; a real photo is not.
+      try {
+        const stats = await require('sharp')(cached).stats();
+        const spread = stats.channels.reduce((a, c) => a + c.stdev, 0) / stats.channels.length;
+        if (spread < 22) {
+          fs.unlinkSync(cached);
+          fs.writeFileSync(missing, '');
+          return fail(res, 404, 'No photo');
+        }
+      } catch {
+        /* if the check itself fails, show what was cut out */
+      }
+    }
+    res.setHeader('Cache-Control', 'private, max-age=86400');
     return res.sendFile(path.resolve(cached));
   })
 );

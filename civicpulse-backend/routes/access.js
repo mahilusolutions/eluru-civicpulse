@@ -28,6 +28,31 @@ const clean = (v, max) =>
 
 const publicUrl = () => (process.env.PUBLIC_URL || 'https://eluru.mahilusolutions.com').replace(/\/$/, '');
 
+/** Cleans and checks the fields of an access request (used when it is sent and when the Super Admin edits it). */
+function parseRequestFields(b) {
+  const v = {
+    full_name: clean(b.full_name, 80),
+    mobile: normalizeMobile(b.mobile),
+    email: clean(b.email, 120).toLowerCase(),
+    designation: clean(b.designation, 80),
+    area: clean(b.area, 120),
+    requested_role: String(b.requested_role || ''),
+    voter_id: clean(b.voter_id, 20).toUpperCase().replace(/[^A-Z0-9/]/g, ''),
+    reason: clean(b.reason, 500),
+    referred_by: clean(b.referred_by, 120),
+  };
+  const errors = {};
+  if (!/^[\p{L}\p{M}][\p{L}\p{M} .'-]{2,79}$/u.test(v.full_name)) errors.full_name = 'Enter the full name (letters only).';
+  if (!v.mobile) errors.mobile = 'Enter a valid 10-digit mobile number.';
+  if (v.email && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v.email)) errors.email = 'Enter a valid email address or leave it empty.';
+  if (v.designation.length < 2) errors.designation = 'Enter the role or organisation.';
+  if (v.area.length < 2) errors.area = 'Enter the ward, booth or locality.';
+  if (!REQUESTABLE_ROLES.includes(v.requested_role)) errors.requested_role = 'Choose the access needed.';
+  if (v.voter_id && !/^[A-Z0-9/]{8,16}$/.test(v.voter_id)) errors.voter_id = 'Voter ID looks wrong or leave it empty.';
+  if (v.reason.length < 10) errors.reason = 'Write at least a sentence about why access is needed.';
+  return { v, errors };
+}
+
 module.exports = function registerAccess({ app, prisma, ok, fail, asyncHandler, auth }) {
   const submitLimiter = rateLimit({
     windowMs: 60 * 60 * 1000,
@@ -123,26 +148,9 @@ module.exports = function registerAccess({ app, prisma, ok, fail, asyncHandler, 
       const b = req.body || {};
       if (b.website) return fail(res, 400, 'Could not submit this request.'); // hidden field: only automated forms fill it
 
-      const full_name = clean(b.full_name, 80);
-      const mobile = normalizeMobile(b.mobile);
-      const email = clean(b.email, 120).toLowerCase();
-      const designation = clean(b.designation, 80);
-      const area = clean(b.area, 120);
-      const requested_role = String(b.requested_role || '');
-      const voter_id = clean(b.voter_id, 20).toUpperCase().replace(/[^A-Z0-9/]/g, '');
-      const reason = clean(b.reason, 500);
-      const referred_by = clean(b.referred_by, 120);
-
-      const errors = {};
-      if (!/^[\p{L}\p{M}][\p{L}\p{M} .'-]{2,79}$/u.test(full_name)) errors.full_name = 'Enter your full name (letters only).';
-      if (!mobile) errors.mobile = 'Enter a valid 10-digit mobile number.';
-      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) errors.email = 'Enter a valid email address or leave it empty.';
-      if (designation.length < 2) errors.designation = 'Tell us your role or organisation.';
-      if (area.length < 2) errors.area = 'Enter your ward, booth or locality.';
-      if (!REQUESTABLE_ROLES.includes(requested_role)) errors.requested_role = 'Choose the access you need.';
-      if (voter_id && !/^[A-Z0-9/]{8,16}$/.test(voter_id)) errors.voter_id = 'Voter ID looks wrong (for example WIO2501872) or leave it empty.';
-      if (reason.length < 10) errors.reason = 'Please write at least a sentence about why you need access.';
+      const { v, errors } = parseRequestFields(b);
       if (b.consent !== true) errors.consent = 'Please confirm the declaration.';
+      const { full_name, mobile, email, designation, area, requested_role, voter_id, reason, referred_by } = v;
       if (Object.keys(errors).length) return res.status(400).json({ success: false, message: 'Please correct the highlighted fields.', errors });
 
       const [pending] = await prisma.$queryRaw`SELECT 1 AS x FROM public.access_requests WHERE mobile = ${mobile} AND status = 'pending' LIMIT 1`;
@@ -329,6 +337,48 @@ module.exports = function registerAccess({ app, prisma, ok, fail, asyncHandler, 
     })
   );
 
+  /** Fix typos in a request that is still waiting. */
+  app.patch(
+    '/api/admin/access-requests/:id',
+    asyncHandler(async (req, res) => {
+      const id = BigInt(req.params.id);
+      const [r] = await prisma.$queryRaw`SELECT * FROM public.access_requests WHERE id = ${id}`;
+      if (!r) return fail(res, 404, 'Request not found.');
+      if (r.status !== 'pending') return fail(res, 409, 'Only a request that is still waiting can be edited.');
+      const b = req.body || {};
+      const merged = {};
+      for (const k of ['full_name', 'mobile', 'email', 'designation', 'area', 'requested_role', 'voter_id', 'reason', 'referred_by']) merged[k] = b[k] !== undefined ? b[k] : r[k];
+      const { v, errors } = parseRequestFields(merged);
+      if (Object.keys(errors).length) return res.status(400).json({ success: false, message: 'Please correct the highlighted fields.', errors });
+      const [dupe] = await prisma.$queryRaw`SELECT 1 AS x FROM public.access_requests WHERE mobile = ${v.mobile} AND status = 'pending' AND id <> ${id} LIMIT 1`;
+      if (dupe) return res.status(409).json({ success: false, message: 'Another waiting request already uses this mobile number.', errors: { mobile: 'Already used by another request.' } });
+      await prisma.$executeRaw`
+        UPDATE public.access_requests
+        SET full_name = ${v.full_name}, mobile = ${v.mobile}, email = ${v.email || null}, designation = ${v.designation}, area = ${v.area},
+            requested_role = ${v.requested_role}, voter_id = ${v.voter_id || null}, reason = ${v.reason}, referred_by = ${v.referred_by || null},
+            status_attempts = 0, status_locked_until = NULL
+        WHERE id = ${id}`;
+      await logAudit(prisma, { entity: 'access_request', entityId: id, action: 'update', ...actorOf(req), summary: `Edited request ${r.reference}`, before: { full_name: r.full_name, mobile: r.mobile, requested_role: r.requested_role, area: r.area }, after: { full_name: v.full_name, mobile: v.mobile, requested_role: v.requested_role, area: v.area } });
+      return ok(res, { id: String(id), reference: r.reference });
+    })
+  );
+
+  /** Remove a request from the list. An account that was created from it stays. */
+  app.delete(
+    '/api/admin/access-requests/:id',
+    asyncHandler(async (req, res) => {
+      const id = BigInt(req.params.id);
+      const [r] = await prisma.$queryRaw`SELECT id, reference, full_name, status FROM public.access_requests WHERE id = ${id}`;
+      if (!r) return fail(res, 404, 'Request not found.');
+      await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`UPDATE public.app_users SET request_id = NULL WHERE request_id = ${id}`;
+        await tx.$executeRaw`DELETE FROM public.access_requests WHERE id = ${id}`;
+      });
+      await logAudit(prisma, { entity: 'access_request', entityId: id, action: 'delete', ...actorOf(req), summary: `Deleted request ${r.reference} (${r.full_name}, ${r.status})`, before: r });
+      return ok(res, { id: String(id) });
+    })
+  );
+
   // ---- accounts
 
   app.get(
@@ -342,51 +392,158 @@ module.exports = function registerAccess({ app, prisma, ok, fail, asyncHandler, 
     })
   );
 
-  /** Super Admin accounts are not edited from the screen; everyone else can be. */
-  async function targetUser(req, res) {
+  const USERNAME_RE = /^[a-z][a-z0-9._-]{2,29}$/;
+
+  async function loadTarget(req, res) {
     const id = BigInt(req.params.id);
     const [u] = await prisma.$queryRaw`SELECT * FROM public.app_users WHERE id = ${id}`;
     if (!u) {
       fail(res, 404, 'Account not found.');
       return null;
     }
-    if (u.role === 'super_admin') {
-      fail(res, 403, 'Super Admin accounts cannot be changed here.');
-      return null;
-    }
+    u.isSelf = String(u.id) === req.auth.user.id;
     return u;
   }
 
+  const otherActiveSuperAdmins = async (u) => (await prisma.$queryRaw`SELECT COUNT(*)::int AS n FROM public.app_users WHERE role = 'super_admin' AND status = 'active' AND id <> ${u.id}`)[0].n;
+
+  /** Add an account directly (for someone who did not use the request form). */
+  app.post(
+    '/api/admin/users',
+    asyncHandler(async (req, res) => {
+      const b = req.body || {};
+      const full_name = clean(b.full_name, 80);
+      const mobile = clean(b.mobile, 20) ? normalizeMobile(b.mobile) : null;
+      const email = clean(b.email, 120).toLowerCase();
+      const role = String(b.role || '');
+      let username = clean(b.username, 30).toLowerCase();
+      const chosen = String(b.password || '');
+      const errors = {};
+      if (!/^[\p{L}\p{M}][\p{L}\p{M} .'-]{2,79}$/u.test(full_name)) errors.full_name = 'Enter the full name (letters only).';
+      if (clean(b.mobile, 20) && !mobile) errors.mobile = 'Enter a valid 10-digit mobile number or leave it empty.';
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) errors.email = 'Enter a valid email address or leave it empty.';
+      if (!ROLES.includes(role)) errors.role = 'Choose a role.';
+      if (username && !USERNAME_RE.test(username)) errors.username = 'Username: 3-30 characters, letters, numbers, dot, dash; start with a letter.';
+      if (chosen && chosen.length < 8) errors.password = 'A typed password needs at least 8 characters (the person must change it at first sign-in anyway).';
+      if (Object.keys(errors).length) return res.status(400).json({ success: false, message: 'Please correct the highlighted fields.', errors });
+      if (mobile) {
+        const [taken] = await prisma.$queryRaw`SELECT 1 AS x FROM public.app_users WHERE mobile = ${mobile} AND status = 'active' LIMIT 1`;
+        if (taken) return res.status(409).json({ success: false, message: 'This mobile number already has an account.', errors: { mobile: 'Already has an account.' } });
+      }
+      if (username) {
+        const [clash] = await prisma.$queryRaw`SELECT 1 AS x FROM public.app_users WHERE lower(username) = ${username}`;
+        if (clash) return res.status(409).json({ success: false, message: 'That username is taken.', errors: { username: 'Already taken.' } });
+      } else {
+        username = await uniqueUsername(prisma, full_name, mobile || '0000');
+      }
+      const password = chosen || generatePassword();
+      const hash = await hashPassword(password);
+      const [u] = await prisma.$queryRaw`
+        INSERT INTO public.app_users (username, full_name, mobile, email, role, password_hash, must_change_password, created_by)
+        VALUES (${username}, ${full_name}, ${mobile}, ${email || null}, ${role}, ${hash}, true, ${BigInt(req.auth.user.id)})
+        RETURNING id, username`;
+      await logAudit(prisma, { entity: 'user', entityId: u.id, action: 'create', ...actorOf(req), summary: `Created account ${u.username} (${ROLE_LABELS[role]}) directly` });
+      return ok(res, { id: String(u.id), username: u.username, role, role_label: ROLE_LABELS[role], password });
+    })
+  );
+
+  /** Change name, contact details, username, role or status. */
   app.patch(
     '/api/admin/users/:id',
     asyncHandler(async (req, res) => {
-      const u = await targetUser(req, res);
+      const u = await loadTarget(req, res);
       if (!u) return null;
-      const role = req.body?.role;
-      const status = req.body?.status;
-      if (role !== undefined && !REQUESTABLE_ROLES.includes(role)) return fail(res, 400, 'Choose a valid role.');
-      if (status !== undefined && !['active', 'disabled'].includes(status)) return fail(res, 400, 'Invalid status.');
-      if (role === undefined && status === undefined) return fail(res, 400, 'Nothing to change.');
-      await prisma.$executeRaw`UPDATE public.app_users SET role = COALESCE(${role ?? null}, role), status = COALESCE(${status ?? null}, status) WHERE id = ${u.id}`;
-      // A role or status change takes effect immediately: the person is signed out everywhere.
-      await prisma.$executeRaw`UPDATE public.auth_sessions SET revoked_at = now() WHERE user_id = ${u.id} AND revoked_at IS NULL`;
-      auth.forgetSessions();
-      await logAudit(prisma, {
-        entity: 'user', entityId: u.id, action: 'update', ...actorOf(req),
-        summary: `${u.username}: ${role ? `role ${u.role} → ${role}` : ''}${role && status ? ', ' : ''}${status ? `status ${u.status} → ${status}` : ''}`,
-        before: { role: u.role, status: u.status }, after: { role: role ?? u.role, status: status ?? u.status },
+      const b = req.body || {};
+      const has = (k) => b[k] !== undefined;
+      const next = { full_name: u.full_name, mobile: u.mobile, email: u.email, username: u.username, role: u.role, status: u.status };
+      const errors = {};
+
+      if (has('full_name')) {
+        next.full_name = clean(b.full_name, 80);
+        if (!/^[\p{L}\p{M}][\p{L}\p{M} .'-]{2,79}$/u.test(next.full_name)) errors.full_name = 'Enter the full name (letters only).';
+      }
+      if (has('mobile')) {
+        next.mobile = clean(b.mobile, 20) ? normalizeMobile(b.mobile) : null;
+        if (clean(b.mobile, 20) && !next.mobile) errors.mobile = 'Enter a valid 10-digit mobile number or leave it empty.';
+      }
+      if (has('email')) {
+        next.email = clean(b.email, 120).toLowerCase() || null;
+        if (next.email && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(next.email)) errors.email = 'Enter a valid email address or leave it empty.';
+      }
+      if (has('username')) {
+        next.username = clean(b.username, 30).toLowerCase();
+        if (!USERNAME_RE.test(next.username)) errors.username = 'Username: 3-30 characters, letters, numbers, dot, dash; start with a letter.';
+      }
+      if (has('role')) {
+        next.role = String(b.role);
+        if (!ROLES.includes(next.role)) errors.role = 'Choose a valid role.';
+      }
+      if (has('status')) {
+        next.status = String(b.status);
+        if (!['active', 'disabled'].includes(next.status)) errors.status = 'Invalid status.';
+      }
+      if (Object.keys(errors).length) return res.status(400).json({ success: false, message: 'Please correct the highlighted fields.', errors });
+
+      const losesAdmin = u.role === 'super_admin' && (next.role !== 'super_admin' || next.status !== 'active');
+      if (u.isSelf && (next.role !== u.role || next.status !== u.status)) return fail(res, 403, 'You cannot change your own role or disable your own account.');
+      if (losesAdmin && (await otherActiveSuperAdmins(u)) === 0) return fail(res, 409, 'This is the last active Super Admin. Make another one first.');
+      if (next.mobile && next.mobile !== u.mobile) {
+        const [taken] = await prisma.$queryRaw`SELECT 1 AS x FROM public.app_users WHERE mobile = ${next.mobile} AND status = 'active' AND id <> ${u.id} LIMIT 1`;
+        if (taken) return res.status(409).json({ success: false, message: 'This mobile number already has an account.', errors: { mobile: 'Already has an account.' } });
+      }
+      if (next.username !== u.username) {
+        const [clash] = await prisma.$queryRaw`SELECT 1 AS x FROM public.app_users WHERE lower(username) = ${next.username} AND id <> ${u.id}`;
+        if (clash) return res.status(409).json({ success: false, message: 'That username is taken.', errors: { username: 'Already taken.' } });
+      }
+
+      const changed = Object.keys(next).filter((k) => String(next[k] ?? '') !== String(u[k] ?? ''));
+      if (!changed.length) return fail(res, 400, 'Nothing to change.');
+      await prisma.$executeRaw`
+        UPDATE public.app_users
+        SET full_name = ${next.full_name}, mobile = ${next.mobile}, email = ${next.email}, username = ${next.username}, role = ${next.role}, status = ${next.status}
+        WHERE id = ${u.id}`;
+      // Role, status or username changes take effect at once: the person is signed out everywhere (except yourself).
+      if (changed.some((k) => ['role', 'status', 'username'].includes(k)) && !u.isSelf) {
+        await prisma.$executeRaw`UPDATE public.auth_sessions SET revoked_at = now() WHERE user_id = ${u.id} AND revoked_at IS NULL`;
+        auth.forgetSessions();
+      }
+      const before = {};
+      const after = {};
+      changed.forEach((k) => {
+        before[k] = u[k] ?? null;
+        after[k] = next[k] ?? null;
       });
-      return ok(res, { id: String(u.id), role: role ?? u.role, status: status ?? u.status });
+      await logAudit(prisma, { entity: 'user', entityId: u.id, action: 'update', ...actorOf(req), summary: `${u.username}: edited ${changed.join(', ')}`, before, after });
+      return ok(res, { id: String(u.id), ...next });
+    })
+  );
+
+  /** Remove an account for good. The person is signed out and can no longer sign in. */
+  app.delete(
+    '/api/admin/users/:id',
+    asyncHandler(async (req, res) => {
+      const u = await loadTarget(req, res);
+      if (!u) return null;
+      if (u.isSelf) return fail(res, 403, 'You cannot delete your own account.');
+      if (u.role === 'super_admin' && u.status === 'active' && (await otherActiveSuperAdmins(u)) === 0) return fail(res, 409, 'This is the last active Super Admin.');
+      await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`UPDATE public.access_requests SET user_id = NULL, credential_cipher = NULL WHERE user_id = ${u.id}`;
+        await tx.$executeRaw`DELETE FROM public.app_users WHERE id = ${u.id}`; // sessions go with it
+      });
+      auth.forgetSessions();
+      await logAudit(prisma, { entity: 'user', entityId: u.id, action: 'delete', ...actorOf(req), summary: `Deleted account ${u.username} (${ROLE_LABELS[u.role] || u.role})`, before: { username: u.username, full_name: u.full_name, role: u.role, mobile: u.mobile } });
+      return ok(res, { id: String(u.id) });
     })
   );
 
   // A new temporary password. If the account came from a request, the person collects it on the status page like the first time;
-  // otherwise it is shown once to the administrator.
+  // otherwise it is shown once to the administrator. (Use "Change password" for your own account.)
   app.post(
     '/api/admin/users/:id/reset-password',
     asyncHandler(async (req, res) => {
-      const u = await targetUser(req, res);
+      const u = await loadTarget(req, res);
       if (!u) return null;
+      if (u.isSelf) return fail(res, 403, 'Use “Change password” in your account menu for your own password.');
       const password = generatePassword();
       const hash = await hashPassword(password);
       await prisma.$executeRaw`
@@ -413,7 +570,7 @@ module.exports = function registerAccess({ app, prisma, ok, fail, asyncHandler, 
   app.post(
     '/api/admin/users/:id/revoke-sessions',
     asyncHandler(async (req, res) => {
-      const u = await targetUser(req, res);
+      const u = await loadTarget(req, res);
       if (!u) return null;
       const r = await prisma.$executeRaw`UPDATE public.auth_sessions SET revoked_at = now() WHERE user_id = ${u.id} AND revoked_at IS NULL`;
       auth.forgetSessions();

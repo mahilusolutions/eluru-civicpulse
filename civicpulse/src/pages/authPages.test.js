@@ -27,6 +27,10 @@ jest.mock('../api/access', () => ({
   updateUser: jest.fn(),
   resetUserPassword: jest.fn(),
   revokeUserSessions: jest.fn(),
+  createUser: jest.fn(),
+  deleteUser: jest.fn(),
+  updateAccessRequest: jest.fn(),
+  deleteAccessRequest: jest.fn(),
 }));
 jest.mock('../utils/download', () => ({ saveBlob: jest.fn(), savePdfBase64: jest.fn() }));
 
@@ -276,5 +280,98 @@ describe('input filtering', () => {
     expect(document.body.querySelector('#mobile').value).toBe('');
     await type('#mobile', '+91 98480 12345');
     expect(document.body.querySelector('#mobile').value).toBe('9848012345');
+  });
+});
+
+describe('Super Admin: manage accounts and requests', () => {
+  const meUser = { user: { id: '1', username: 'superadmin', full_name: 'Super Admin', role: 'super_admin', role_label: 'Super Admin', must_change_password: false } };
+  const accounts = [
+    { id: '1', username: 'superadmin', full_name: 'Super Admin', mobile: null, role: 'super_admin', status: 'active', must_change_password: false, last_login_at: null, active_sessions: 1 },
+    { id: '2', username: 'lakshmid.3210', full_name: 'Lakshmi Devi', mobile: '9876543210', role: 'coordinator', status: 'active', must_change_password: false, last_login_at: null, active_sessions: 0 },
+  ];
+  const pendingRow = {
+    id: '7', reference: 'CPR-7K3M-9QX2', full_name: 'Ravi Kumar', mobile: '9848012345', email: null, designation: 'Booth agent', area: 'Booth 14',
+    requested_role: 'booth_agent', voter_id: null, reason: 'Updating voters for booth 14', referred_by: null, status: 'pending', admin_note: null, created_at: new Date().toISOString(),
+  };
+
+  async function openAccounts() {
+    authApi.getMe.mockResolvedValue(meUser);
+    accessApi.listAccessRequests.mockResolvedValue([pendingRow]);
+    accessApi.listUsers.mockResolvedValue(accounts);
+    await mount(<AccessPage />, '/app/access');
+    await click(buttonWith('Accounts'));
+  }
+
+  test('your own row has no delete or disable, other rows do', async () => {
+    await openAccounts();
+    expect(document.body.querySelector('[aria-label="Delete lakshmid.3210"]')).not.toBeNull();
+    expect(document.body.querySelector('[aria-label="Delete superadmin"]')).toBeNull();
+    expect(text()).toContain('You');
+  });
+
+  test('add account: sends the details and shows the username and temporary password once', async () => {
+    accessApi.createUser.mockResolvedValue({ id: '9', username: 'sitam.4455', role: 'volunteer', role_label: 'Volunteer', password: 'Ab3k-Q4pR-9tWn' });
+    await openAccounts();
+    await click(buttonWith('Add account'));
+    await type('#a_name', 'Sita Mahalakshmi');
+    await type('#a_mobile', '98765 44455');
+    await type('#a_role', 'volunteer');
+    await click(buttonWith('Create account'));
+    expect(accessApi.createUser).toHaveBeenCalledWith(expect.objectContaining({ full_name: 'Sita Mahalakshmi', mobile: '9876544455', role: 'volunteer' }));
+    expect(text()).toContain('sitam.4455');
+    expect(text()).toContain('Ab3k-Q4pR-9tWn');
+    expect(text()).toContain('Shown only now');
+  });
+
+  test('edit account: only the changed fields are sent', async () => {
+    accessApi.updateUser.mockResolvedValue({});
+    await openAccounts();
+    await click(document.body.querySelector('[aria-label="Edit lakshmid.3210"]'));
+    expect(text()).toContain('Edit account');
+    await type('#a_name', 'Lakshmi Devi Rao');
+    await click(buttonWith('Save changes'));
+    expect(accessApi.updateUser).toHaveBeenCalledWith('2', { full_name: 'Lakshmi Devi Rao' });
+  });
+
+  test('delete account asks first, then deletes', async () => {
+    accessApi.deleteUser.mockResolvedValue({});
+    await openAccounts();
+    await click(document.body.querySelector('[aria-label="Delete lakshmid.3210"]'));
+    expect(text()).toContain('Delete this account?');
+    expect(accessApi.deleteUser).not.toHaveBeenCalled();
+    await click(buttonWith('Delete') && [...document.body.querySelectorAll('button')].filter((b) => b.textContent.trim() === 'Delete').pop());
+    expect(accessApi.deleteUser).toHaveBeenCalledWith('2');
+  });
+
+  test('your own account can be edited but not made a lesser role', async () => {
+    await openAccounts();
+    await click(document.body.querySelector('[aria-label="Edit superadmin"]'));
+    expect(text()).toContain('this is you');
+    expect(document.body.querySelector('#a_role').disabled).toBe(true);
+    expect(document.body.querySelector('#a_status').disabled).toBe(true);
+  });
+
+  test('edit a waiting request', async () => {
+    authApi.getMe.mockResolvedValue(meUser);
+    accessApi.listAccessRequests.mockResolvedValue([pendingRow]);
+    accessApi.updateAccessRequest.mockResolvedValue({});
+    await mount(<AccessPage />, '/app/access');
+    await click(document.body.querySelector('[aria-label="Edit the details"]'));
+    expect(text()).toContain('Edit request');
+    await type('#e_area', 'Booth 15, Sanivarapu Peta');
+    await click(buttonWith('Save changes'));
+    expect(accessApi.updateAccessRequest).toHaveBeenCalledWith('7', expect.objectContaining({ area: 'Booth 15, Sanivarapu Peta', full_name: 'Ravi Kumar' }));
+  });
+
+  test('delete a request asks first, then deletes', async () => {
+    authApi.getMe.mockResolvedValue(meUser);
+    accessApi.listAccessRequests.mockResolvedValue([pendingRow]);
+    accessApi.deleteAccessRequest.mockResolvedValue({});
+    await mount(<AccessPage />, '/app/access');
+    await click(document.body.querySelector('[aria-label="Delete this request"]'));
+    expect(text()).toContain('Delete this request?');
+    expect(accessApi.deleteAccessRequest).not.toHaveBeenCalled();
+    await click([...document.body.querySelectorAll('button')].filter((b) => b.textContent.trim() === 'Delete').pop());
+    expect(accessApi.deleteAccessRequest).toHaveBeenCalledWith('7');
   });
 });

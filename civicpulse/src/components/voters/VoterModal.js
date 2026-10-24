@@ -198,6 +198,7 @@ export default function VoterModal({ id, onClose, onSelect, onChanged }) {
   const [error, setError] = useState('');
   const [imgBroken, setImgBroken] = useState(false);
   const [imgLoaded, setImgLoaded] = useState(false);
+  const [photoBroken, setPhotoBroken] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -205,6 +206,7 @@ export default function VoterModal({ id, onClose, onSelect, onChanged }) {
     setError('');
     setImgBroken(false);
     setImgLoaded(false);
+    setPhotoBroken(false);
     getVoter(id)
       .then((data) => !cancelled && setVoter(data))
       .catch((err) => !cancelled && setError(err.message || 'Could not load this voter'));
@@ -249,13 +251,22 @@ export default function VoterModal({ id, onClose, onSelect, onChanged }) {
         {/* Header */}
         <div className="flex items-center gap-3 border-b border-[var(--line)] px-4 py-3">
           {voter ? (
-            <span
-              className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-sm font-extrabold text-white"
-              style={{ background: genderColor(voter.gender) }}
-              aria-hidden
-            >
-              {initials(voter.name)}
-            </span>
+            voter.photo_url && !photoBroken ? (
+              <img
+                src={assetUrl(voter.photo_url)}
+                alt={niceName(voter.name)}
+                onError={() => setPhotoBroken(true)}
+                className="h-14 w-12 shrink-0 rounded-xl border border-[var(--line)] bg-[var(--bg-muted)] object-cover"
+              />
+            ) : (
+              <span
+                className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-sm font-extrabold text-white"
+                style={{ background: genderColor(voter.gender) }}
+                aria-hidden
+              >
+                {initials(voter.name)}
+              </span>
+            )
           ) : null}
           <div className="min-w-0 flex-1">
             <h2 className="truncate text-base font-extrabold leading-tight text-[var(--ink)]">

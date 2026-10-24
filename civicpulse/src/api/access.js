@@ -29,3 +29,7 @@ export const listUsers = () => client.get('/admin/users').then(unwrap);
 export const updateUser = (id, changes) => client.patch(`/admin/users/${id}`, changes).then(unwrap);
 export const resetUserPassword = (id) => client.post(`/admin/users/${id}/reset-password`).then(unwrap);
 export const revokeUserSessions = (id) => client.post(`/admin/users/${id}/revoke-sessions`).then(unwrap);
+export const createUser = (payload) => client.post('/admin/users', payload).then(unwrap);
+export const deleteUser = (id) => client.delete(`/admin/users/${id}`).then(unwrap);
+export const updateAccessRequest = (id, payload) => client.patch(`/admin/access-requests/${id}`, payload).then(unwrap);
+export const deleteAccessRequest = (id) => client.delete(`/admin/access-requests/${id}`).then(unwrap);
