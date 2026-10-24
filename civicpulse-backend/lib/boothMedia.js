@@ -116,12 +116,26 @@ async function readTeluguStation(pdf) {
       const { stdout } = await niceRun(TESSERACT, [file, 'stdout', ...langArgs, '--psm', '6'], { timeout: 120000, env: { ...process.env, OMP_THREAD_LIMIT: '1' } });
       return tidy(stdout);
     };
-    const nameLines = await read('name', 0.628, 0.655);
-    const addrLines = await read('addr', 0.685, 0.745);
+    // The page grows or shrinks with the number of roads listed in section 2, so the rows are found from the table's
+    // own horizontal lines: section 3's heading bar ends at the 8th line, and section 4's heading starts at the 9th.
+    const { data, info } = await sharp(page).greyscale().raw().toBuffer({ resolveWithObject: true });
+    const lines = [];
+    for (let y = 0; y < H; y += 1) {
+      let dark = 0;
+      for (let x = Math.round(0.03 * W); x < Math.round(0.55 * W); x += 1) if (data[y * info.width + x] < 110) dark += 1;
+      if (dark / (0.52 * W) > 0.9 && (!lines.length || y / H - lines[lines.length - 1] > 0.008)) lines.push(y / H);
+    }
+    const sec3 = lines[7];
+    const sec4 = lines[8];
+    if (sec3 == null || sec4 == null || sec4 - sec3 < 0.08) return { name: null, address: null };
+    const nameLines = await read('name', sec3 + 0.022, sec3 + 0.056);
+    const addrLines = await read('addr', sec4 - 0.068, sec4 - 0.004);
     const nameLine = nameLines.find((l) => /^\d+\s*[-–]/.test(l)) || [...nameLines].sort((x, y) => y.length - x.length)[0] || '';
     const name = nameLine.replace(/^\d+\s*[-–]\s*/, '').trim();
     const address = addrLines.join(' ').replace(/\s+/g, ' ').trim();
-    return { name: name || null, address: address || null };
+    // Only text that is mostly Telugu is kept; anything else is a misread and would be worse than the placeholder.
+    const telugu = (t) => t && (t.match(/[ఀ-౿]/g) || []).length >= t.replace(/[\s,.\-]/g, '').length * 0.7;
+    return { name: telugu(name) ? name : null, address: telugu(address) ? address : null };
   } finally {
     fs.rmSync(work, { recursive: true, force: true });
   }
