@@ -110,11 +110,10 @@ async function readTeluguStation(pdf) {
     const page = await renderPage(pdf, 1, 200, path.join(work, 'p'));
     const { width: W, height: H } = await sharp(page).metadata();
     const langArgs = fs.existsSync(path.join(TESSDATA_DIR, 'tel.traineddata')) ? ['--tessdata-dir', TESSDATA_DIR, '-l', 'tel+eng'] : ['-l', 'tel+eng'];
-    const read = async (name, y0, y1) => {
+    const read = async (name, y0, y1, frac = 0.55) => {
       const file = path.join(work, `${name}.png`);
-      await sharp(page).extract({ left: Math.round(0.02 * W), top: Math.round(y0 * H), width: Math.round(0.55 * W), height: Math.round((y1 - y0) * H) }).toFile(file);
+      await sharp(page).extract({ left: Math.round(0.02 * W), top: Math.round(y0 * H), width: Math.round(frac * W), height: Math.round((y1 - y0) * H) }).toFile(file);
       const { stdout } = await niceRun(TESSERACT, [file, 'stdout', ...langArgs, '--psm', '6'], { timeout: 120000, env: { ...process.env, OMP_THREAD_LIMIT: '1' } });
-      if (process.env.DEBUG_STATION) console.log(name, JSON.stringify(stdout));
       return tidy(stdout);
     };
     // The page grows or shrinks with the number of roads listed in section 2, so the rows are found from the table's
@@ -129,11 +128,13 @@ async function readTeluguStation(pdf) {
     const sec3 = lines[7];
     const sec4 = lines[8];
     if (sec3 == null || sec4 == null || sec4 - sec3 < 0.08) return { name: null, address: null };
-    const nameLines = await read('name', sec3 + 0.022, sec3 + 0.056);
+    const nameLines = await read('name', sec3 + 0.025, sec3 + 0.054, 0.46);
     const addrLines = await read('addr', sec4 - 0.068, sec4 - 0.004);
     const nameLine = nameLines.find((l) => /^\d+\s*[-–]/.test(l)) || [...nameLines].sort((x, y) => y.length - x.length)[0] || '';
-    const name = nameLine.replace(/^\d+\s*[-–]\s*/, '').trim();
-    const address = addrLines.join(' ').replace(/\s+/g, ' ').trim();
+    // a one- or two-letter scrap at the very end is the table border read as text
+    const name = nameLine.replace(/^[|\s]*\d+\s*[-–]\s*/, '').replace(/(\S+\s+\S+\s+\S+.*?)\s+\S{1,2}$/, '$1').trim();
+    // the label "Polling station address:" is cut off, whatever came before the word చిరునామా
+    const address = addrLines.join(' ').replace(/\s+/g, ' ').replace(/^.*?\u0C1A\u0C3F\u0C30\u0C41\u0C28\u0C3E\u0C2E\u0C3E\s*:?\s*/, '').trim();
     // Only text that is mostly Telugu is kept; anything else is a misread and would be worse than the placeholder.
     const telugu = (t) => t && (t.match(/[ఀ-౿]/g) || []).length >= t.replace(/[\s,.\-]/g, '').length * 0.7;
     return { name: telugu(name) ? name : null, address: telugu(address) ? address : null };
