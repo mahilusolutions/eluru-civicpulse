@@ -1104,11 +1104,11 @@ app.get(
     }));
 
     const pics = await prisma.$queryRaw`
-      SELECT kind, label, width, height FROM public.booth_media WHERE part_no = ${partNo}`;
+      SELECT kind, label, width, height, floor(extract(epoch FROM created_at))::bigint AS v FROM public.booth_media WHERE part_no = ${partNo}`;
     const order = ['nazri_naksha', 'google_map', 'building_front', 'station_front', 'cad_view', 'key_map'];
     const pictures = pics
       .sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind))
-      .map((p) => ({ ...p, url: `/api/booths/${partNo}/media/${p.kind}` }));
+      .map((p) => ({ ...p, v: undefined, url: `/api/booths/${partNo}/media/${p.kind}?v=${p.v}` }));
 
     ok(res, { ...booth, roads_list: roads, age_bands, roll_info: meta.roll_info || null, media, pictures });
   })
