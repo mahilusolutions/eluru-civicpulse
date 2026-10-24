@@ -12,7 +12,7 @@ module.exports = function registerDashboard({ app, prisma, ok, asyncHandler, loa
                  COUNT(*) FILTER (WHERE created_at >= date_trunc('day', now()))::int AS today,
                  COUNT(*) FILTER (WHERE created_at >= now() - interval '7 days')::int AS last7
           FROM public.outreach`,
-        prisma.teamMember.count(),
+        prisma.$queryRaw`SELECT COUNT(*)::int AS n FROM public.app_users WHERE role <> 'super_admin' AND status = 'active'`.then((r) => r[0].n),
         prisma.rollFile.count(),
         prisma.$queryRaw`
           SELECT o.id, o.type::text AS type, o.outcome, o.created_at, e.name AS voter_name, e.part_no

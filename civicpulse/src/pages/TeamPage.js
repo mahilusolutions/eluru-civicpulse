@@ -1,135 +1,50 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { BarChart3, Eye, Phone, Plus, RefreshCw } from 'lucide-react';
+import { BarChart3, Eye, Phone, RefreshCw } from 'lucide-react';
 import { getBooths } from '../api/booths';
-import { createTeamMember, deleteTeamMember, getTeam, updateTeamMember } from '../api/team';
-import { useAuth } from '../auth/AuthContext';
-import { ROLES } from '../auth/roles';
-import BoothPicker from '../components/pickers/BoothPicker';
+import { getTeam } from '../api/team';
 import AlertBanner from '../components/ui/AlertBanner';
-import ConfirmButton from '../components/ui/ConfirmButton';
 import DataList, { CardShell } from '../components/ui/DataList';
 import { FilterSelect } from '../components/ui/FilterBar';
 import Modal from '../components/ui/Modal';
 import PageHeader from '../components/ui/PageHeader';
-import { Field, btnPrimary } from '../components/ui/Panel';
-import { FilterField, FilterPanel, Meter, MiniFact, Pill, StatStrip, ViewSwitch, btnTool, btnToolPrimary, inputSm, useChartsOpen, useDebouncedSearch, useViewMode } from '../components/ui/kit';
+import { Field } from '../components/ui/Panel';
+import { FilterField, FilterPanel, Meter, MiniFact, Pill, StatStrip, ViewSwitch, btnTool, inputSm, useChartsOpen, useDebouncedSearch, useViewMode } from '../components/ui/kit';
 import { BarList, ChartCard } from '../components/voters/VoterCharts';
 import { useApi } from '../hooks/useApi';
 import { fmt, initials, pct } from '../utils/voterFormat';
 
-const ROLE_CHOICES = ['Coordinator', 'Booth Agent', 'Volunteer', 'Admin'];
-
 const boothsLabel = (parts = [], max = 4) => (parts.length ? (parts.length > max ? `${parts.slice(0, max).join(', ')} +${parts.length - max}` : parts.join(', ')) : 'None yet');
 
-function PersonModal({ person, booths, canEdit, onClose, onSaved }) {
-  const isNew = !person;
-  const [form, setForm] = useState({
-    name: person?.name || '',
-    role: person?.role || 'Booth Agent',
-    zone: person?.zone || '',
-    phone: person?.phone || '',
-    status: person?.status || 'Active',
-    assigned_parts: person?.assigned_parts || [],
-  });
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-
-  async function save(e) {
-    e.preventDefault();
-    setBusy(true);
-    setError('');
-    try {
-      if (isNew) await createTeamMember(form);
-      else await updateTeamMember(person.id, form);
-      onSaved(isNew ? `${form.name} added to the team.` : 'Changes saved.');
-      onClose();
-    } catch (err) {
-      setError(err.message);
-      setBusy(false);
-    }
-  }
-
-  async function remove() {
-    setBusy(true);
-    try {
-      await deleteTeamMember(person.id);
-      onSaved(`${person.name} removed from the team.`);
-      onClose();
-    } catch (err) {
-      setError(err.message);
-      setBusy(false);
-    }
-  }
-
-  const roleChoices = ROLE_CHOICES.includes(form.role) ? ROLE_CHOICES : [form.role, ...ROLE_CHOICES];
-
+function PersonModal({ person, onClose }) {
   return (
-    <Modal
-      title={isNew ? 'Add a team member' : person.name}
-      subtitle={isNew ? 'Coordinators, booth agents and volunteers.' : `${person.role}${person.zone ? ` · ${person.zone}` : ''}`}
-      size="md"
-      onClose={onClose}
-      footer={
-        canEdit ? (
-          <>
-            {!isNew ? <ConfirmButton label="Remove" confirmLabel="Yes, remove" onConfirm={remove} disabled={busy} /> : null}
-            <span className="flex-1" />
-            <button type="button" onClick={onClose} className="rounded-xl px-3 py-2 text-xs font-semibold text-[var(--muted)] hover:text-[var(--ink)]">
-              Cancel
-            </button>
-            <button type="submit" form="person-form" disabled={busy} className={`${btnPrimary} !py-2`}>
-              {busy ? 'Saving…' : isNew ? 'Add to team' : 'Save changes'}
-            </button>
-          </>
-        ) : null
-      }
-    >
-      <AlertBanner tone="danger">{error}</AlertBanner>
-      <form id="person-form" onSubmit={save} className="space-y-3">
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Name">
-            <input required autoFocus={isNew} disabled={!canEdit} maxLength={120} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputSm} />
-          </Field>
-          <Field label="Role">
-            <select disabled={!canEdit} value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} className={inputSm}>
-              {roleChoices.map((r) => (
-                <option key={r}>{r}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Phone (optional)">
-            <input disabled={!canEdit} inputMode="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="98480 12345" className={inputSm} />
-          </Field>
-          <Field label="Area or zone (optional)">
-            <input disabled={!canEdit} maxLength={120} value={form.zone} onChange={(e) => setForm({ ...form, zone: e.target.value })} placeholder="e.g. Sanivarapu Peta" className={inputSm} />
-          </Field>
-        </div>
-        {!isNew ? (
-          <Field label="Status">
-            <select disabled={!canEdit} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })} className={inputSm}>
-              <option>Active</option>
-              <option>Inactive</option>
-            </select>
-          </Field>
-        ) : null}
-        <div>
-          <p className="mb-1.5 text-xs font-semibold text-[var(--muted)]">Booths they look after</p>
-          {canEdit ? (
-            <BoothPicker booths={booths} value={form.assigned_parts} onChange={(parts) => setForm({ ...form, assigned_parts: parts })} />
-          ) : (
-            <p className="text-sm text-[var(--ink-soft)]">{boothsLabel(form.assigned_parts, 20)}</p>
-          )}
-        </div>
-      </form>
+    <Modal title={person.name} subtitle={`${person.role}${person.zone ? ` · ${person.zone}` : ''}`} size="md" onClose={onClose}>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="Role">
+          <input disabled value={person.role} className={inputSm} />
+        </Field>
+        <Field label="Status">
+          <input disabled value={person.status} className={inputSm} />
+        </Field>
+        <Field label="Phone">
+          <input disabled value={person.phone || '—'} className={inputSm} />
+        </Field>
+        <Field label="Area or zone">
+          <input disabled value={person.zone || '—'} className={inputSm} />
+        </Field>
+      </div>
+      <div className="mt-3">
+        <p className="mb-1.5 text-xs font-semibold text-[var(--muted)]">Booths they look after</p>
+        <p className="text-sm text-[var(--ink-soft)]">{boothsLabel(person.assigned_parts, 40)}</p>
+      </div>
+      <p className="mt-4 rounded-lg bg-[var(--bg-muted)] p-3 text-xs text-[var(--muted)]">
+        This person is an account. The Super Admin changes accounts (name, role, password) on the Accounts page. Booths are assigned in the booth window: open a booth and choose the booth agent or coordinator.
+      </p>
     </Modal>
   );
 }
 
 export default function TeamPage() {
-  const { role } = useAuth();
-  const canEdit = [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.COORDINATOR].includes(role);
-
   const teamApi = useApi(getTeam, []);
   const boothsApi = useApi(getBooths, []);
   const team = useMemo(() => teamApi.data || [], [teamApi.data]);
@@ -156,7 +71,6 @@ export default function TeamPage() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const [open, setOpen] = useState(null);
-  const [notice, setNotice] = useState('');
 
   const sig = JSON.stringify(f);
   useEffect(() => setPage(1), [sig, pageSize]);
@@ -221,12 +135,12 @@ export default function TeamPage() {
         cell: (m) => (
           <button type="button" onClick={() => setOpen(m)} className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--line)] bg-[var(--bg-elevated)] px-2.5 py-1.5 text-xs font-semibold text-[var(--brand)] transition hover:border-[var(--brand)]">
             <Eye className="h-3.5 w-3.5" />
-            {canEdit ? 'Edit' : 'View'}
+            View
           </button>
         ),
       },
     ],
-    [canEdit]
+    []
   );
 
   const renderCard = (m) => (
@@ -244,7 +158,7 @@ export default function TeamPage() {
         </div>
         <button type="button" onClick={() => setOpen(m)} className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--line)] px-2.5 py-1.5 text-xs font-semibold text-[var(--brand)]">
           <Eye className="h-3.5 w-3.5" />
-          {canEdit ? 'Edit' : 'View'}
+          View
         </button>
       </div>
       <dl className="mt-3 grid grid-cols-2 gap-3 border-t border-[var(--line)] pt-3">
@@ -258,7 +172,7 @@ export default function TeamPage() {
   return (
     <section className="w-full space-y-3">
       <PageHeader
-        description="The people running the campaign: coordinators, booth agents and volunteers, and which booths each one looks after."
+        description="The people with an account: coordinators, booth agents and volunteers, and which booths each one looks after."
         actions={
           <>
             <ViewSwitch view={view} onChange={setView} />
@@ -269,12 +183,6 @@ export default function TeamPage() {
             <button type="button" onClick={refresh} className={btnTool} aria-label="Refresh">
               <RefreshCw className="h-3.5 w-3.5" />
             </button>
-            {canEdit ? (
-              <button type="button" onClick={() => setOpen('new')} className={btnToolPrimary}>
-                <Plus className="h-3.5 w-3.5" />
-                Add team member
-              </button>
-            ) : null}
           </>
         }
       />
@@ -289,7 +197,6 @@ export default function TeamPage() {
       </FilterPanel>
 
       <AlertBanner tone="danger">{teamApi.error || boothsApi.error}</AlertBanner>
-      <AlertBanner tone="success">{notice}</AlertBanner>
 
       <StatStrip
         items={[
@@ -323,21 +230,10 @@ export default function TeamPage() {
         loading={teamApi.loading && !teamApi.data}
         pagination={paging}
         emptyTitle={chips.length ? 'No one matches these filters' : 'No team members yet'}
-        emptyDescription={chips.length ? 'Try removing a filter.' : canEdit ? 'Choose “Add team member” to add your first coordinator or booth agent.' : 'Team members will appear here once they are added.'}
+        emptyDescription={chips.length ? 'Try removing a filter.' : 'People appear here once the Super Admin has created their accounts.'}
       />
 
-      {open ? (
-        <PersonModal
-          person={open === 'new' ? null : open}
-          booths={booths}
-          canEdit={canEdit}
-          onClose={() => setOpen(null)}
-          onSaved={(msg) => {
-            setNotice(msg);
-            refresh();
-          }}
-        />
-      ) : null}
+      {open ? <PersonModal person={open} onClose={() => setOpen(null)} /> : null}
     </section>
   );
 }

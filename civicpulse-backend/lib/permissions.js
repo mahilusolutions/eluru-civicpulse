@@ -47,9 +47,6 @@ const RULES = [
   ['DELETE', /^\/surveys\/\d+$/, ADMINS],
   ['POST', /^\/surveys\/\d+\/responses$/, NOT_VIEWER],
 
-  ['POST', /^\/team$/, LEADS],
-  ['PATCH', /^\/team\/\d+$/, LEADS],
-  ['DELETE', /^\/team\/\d+$/, LEADS],
 
   ['POST', /^\/wards$/, LEADS],
   ['PATCH', /^\/wards\/\d+$/, LEADS],

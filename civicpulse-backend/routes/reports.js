@@ -65,10 +65,14 @@ module.exports = function registerReports({ app, prisma, ok, fail, asyncHandler,
       };
     },
     team: async () => {
-      const rows = await prisma.teamMember.findMany({ orderBy: { id: 'asc' } });
+      const rows = await prisma.$queryRaw`
+        SELECT u.full_name, u.role, r.area, u.mobile, u.status,
+               (SELECT string_agg(b.part_no::text, ' ' ORDER BY b.part_no) FROM public.booths b WHERE b.agent_user_id = u.id OR b.coordinator_user_id = u.id) AS booths
+        FROM public.app_users u LEFT JOIN public.access_requests r ON r.id = u.request_id
+        WHERE u.role <> 'super_admin' ORDER BY u.full_name`;
       return {
         head: ['Name', 'Role', 'Zone', 'Phone', 'Status', 'Booths'],
-        rows: rows.map((m) => [m.name, m.role, m.zone, m.phone, m.status, (m.assignedParts || []).join(' ')]),
+        rows: rows.map((m) => [m.full_name, m.role, m.area, m.mobile, m.status, m.booths]),
       };
     },
   };
@@ -82,7 +86,7 @@ module.exports = function registerReports({ app, prisma, ok, fail, asyncHandler,
         prisma.$queryRaw`SELECT COUNT(*)::int AS n FROM (SELECT 1 FROM voterdb.electors WHERE house_no IS NOT NULL AND house_no <> '' GROUP BY part_no, house_no) g`,
         prisma.issue.count(),
         prisma.outreach.count(),
-        prisma.teamMember.count(),
+        prisma.$queryRaw`SELECT COUNT(*)::int AS n FROM public.app_users WHERE role <> 'super_admin' AND status = 'active'`.then((r) => r[0].n),
       ]);
       ok(res, { voters, booths, households: households[0].n, issues, outreach, team });
     })
