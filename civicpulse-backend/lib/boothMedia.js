@@ -118,7 +118,7 @@ async function readTeluguStation(pdf) {
     };
     const nameLines = await read('name', 0.628, 0.655);
     const addrLines = await read('addr', 0.685, 0.745);
-    const nameLine = nameLines.find((l) => /^d+s*[-–]/.test(l)) || [...nameLines].sort((x, y) => y.length - x.length)[0] || '';
+    const nameLine = nameLines.find((l) => /^\d+\s*[-–]/.test(l)) || [...nameLines].sort((x, y) => y.length - x.length)[0] || '';
     const name = nameLine.replace(/^\d+\s*[-–]\s*/, '').trim();
     const address = addrLines.join(' ').replace(/\s+/g, ' ').trim();
     return { name: name || null, address: address || null };
