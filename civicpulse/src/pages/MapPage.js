@@ -1,31 +1,70 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Crosshair, MapPin, Navigation, RefreshCw, Search, Users, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Crosshair,
+  Expand,
+  List,
+  LocateFixed,
+  Map as MapIcon,
+  MapPin,
+  Minimize2,
+  Navigation,
+  RefreshCw,
+  Search,
+  X,
+} from 'lucide-react';
 import { getBooths } from '../api/booths';
 import { useAuth } from '../auth/AuthContext';
 import { ROLES } from '../auth/roles';
 import BoothModal from '../components/booths/BoothModal';
-import BoothLeafletMap from '../components/map/BoothLeafletMap';
+import BoothLeafletMap, { groupBoothSites } from '../components/map/BoothLeafletMap';
 import AlertBanner from '../components/ui/AlertBanner';
-import PageHeader from '../components/ui/PageHeader';
-import { btnTool } from '../components/ui/kit';
 import { useApi } from '../hooks/useApi';
-import { REACH_STEPS, reachStep, reachedPct, stationName } from '../utils/boothFormat';
+import { inEluru } from '../utils/eluruBounds';
+import { reachedPct, stationName } from '../utils/boothFormat';
 import { fmt } from '../utils/voterFormat';
 
-const hasLocation = (b) => b.lat != null && b.lng != null;
+const hasLocation = (b) => b.lat != null && b.lng != null && inEluru(b.lat, b.lng);
+
+const FILTERS = [
+  { id: 'all', label: 'All' },
+  { id: 'cold', label: 'Not reached' },
+  { id: 'warm', label: 'Started' },
+  { id: 'hot', label: 'Strong' },
+];
+
+function siteKeyOf(b) {
+  if (!hasLocation(b)) return null;
+  return `${Number(b.lat).toFixed(5)},${Number(b.lng).toFixed(5)}`;
+}
+
+function boothTone(pct) {
+  if (pct <= 0) return '#38bdf8';
+  if (pct < 25) return '#0ea5e9';
+  if (pct < 50) return '#0284c7';
+  if (pct < 75) return '#0369a1';
+  return '#075985';
+}
 
 export default function MapPage() {
   const { role } = useAuth();
   const canEdit = [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.COORDINATOR].includes(role);
+  const stageRef = useRef(null);
+  const listRef = useRef(null);
 
   const { data, loading, error, reload } = useApi(getBooths, []);
   const booths = useMemo(() => data || [], [data]);
 
   const [search, setSearch] = useState('');
   const [reachFilter, setReachFilter] = useState('all');
-  const [selected, setSelected] = useState(null);
+  const [siteKey, setSiteKey] = useState(null);
+  const [pickedPart, setPickedPart] = useState(null);
+  const [focusSeq, setFocusSeq] = useState(0);
   const [openPart, setOpenPart] = useState(null);
-  const [listOpen, setListOpen] = useState(true);
+  const [fullscreen, setFullscreen] = useState(false);
+  const [locateNonce, setLocateNonce] = useState(0);
+  const [fitNonce, setFitNonce] = useState(0);
+  /** mobile: map | list */
+  const [mobileTab, setMobileTab] = useState('map');
 
   const located = useMemo(() => booths.filter(hasLocation), [booths]);
 
@@ -38,254 +77,307 @@ export default function MapPage() {
       if (reachFilter === 'hot' && pct < 50) return false;
       if (!needle) return true;
       return (
-        String(b.part_no) === needle ||
+        String(b.part_no).includes(needle) ||
         stationName(b.polling_station_name, b.part_no).toLowerCase().includes(needle) ||
-        (b.polling_station_address || '').toLowerCase().includes(needle)
+        (b.polling_station_address || '').toLowerCase().includes(needle) ||
+        (b.area_name || '').toLowerCase().includes(needle)
       );
     });
   }, [located, search, reachFilter]);
 
-  const selectedBooth = useMemo(
-    () => booths.find((b) => b.part_no === selected) || null,
-    [booths, selected]
+  const sites = useMemo(() => groupBoothSites(filtered), [filtered]);
+  const selectedSite = useMemo(() => sites.find((s) => s.key === siteKey) || null, [sites, siteKey]);
+  const pickedBooth = useMemo(
+    () => (pickedPart != null ? booths.find((b) => b.part_no === pickedPart) : null),
+    [booths, pickedPart]
   );
 
-  useEffect(() => {
-    if (selected != null && !filtered.some((b) => b.part_no === selected)) {
-      // keep selection if it still exists on the map dataset
-    }
-  }, [filtered, selected]);
-
-  const voterShare = booths.reduce((n, b) => n + (b.voters || 0), 0);
-  const mappedVoters = located.reduce((n, b) => n + (b.voters || 0), 0);
-  const avgReach = located.length
-    ? Math.round(located.reduce((n, b) => n + reachedPct(b), 0) / located.length)
-    : 0;
-
   const list = useMemo(() => {
-    const needle = search.trim().toLowerCase();
-    const rows = [...filtered].sort((a, b) => {
-      if (needle && String(a.part_no) === needle) return -1;
-      if (needle && String(b.part_no) === needle) return 1;
-      return reachedPct(a) - reachedPct(b) || a.part_no - b.part_no;
-    });
-    return rows.slice(0, 60);
-  }, [filtered, search]);
+    if (selectedSite) return selectedSite.booths;
+    return [...filtered].sort((a, b) => a.part_no - b.part_no);
+  }, [filtered, selectedSite]);
+
+  const activeBooth = pickedBooth || (selectedSite?.count === 1 ? selectedSite.booths[0] : null);
+
+  useEffect(() => {
+    const onFs = () => setFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener('fullscreenchange', onFs);
+    return () => document.removeEventListener('fullscreenchange', onFs);
+  }, []);
+
+  // Keep the active booth row visible in the side list
+  useEffect(() => {
+    if (pickedPart == null || !listRef.current) return;
+    const el = listRef.current.querySelector(`[data-part="${pickedPart}"]`);
+    el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [pickedPart, list]);
+
+  // Leaflet needs a size refresh when the map tab becomes visible again
+  useEffect(() => {
+    if (mobileTab !== 'map') return;
+    const t = window.setTimeout(() => setFocusSeq((n) => n + 1), 80);
+    return () => window.clearTimeout(t);
+  }, [mobileTab]);
+
+  async function toggleFullscreen() {
+    const el = stageRef.current;
+    if (!el) return;
+    if (!document.fullscreenElement) await el.requestFullscreen?.();
+    else await document.exitFullscreen?.();
+  }
+
+  function bumpFocus() {
+    setFocusSeq((n) => n + 1);
+  }
+
+  function selectSite(site) {
+    setSiteKey(site.key);
+    setPickedPart(site.count === 1 ? site.booths[0].part_no : null);
+    bumpFocus();
+    setMobileTab('map');
+  }
+
+  function pickBooth(part) {
+    const booth = booths.find((b) => b.part_no === part);
+    if (!booth) return;
+    setSiteKey(siteKeyOf(booth));
+    setPickedPart(part);
+    bumpFocus();
+    setMobileTab('map');
+  }
+
+  function clearSelection() {
+    setSiteKey(null);
+    setPickedPart(null);
+  }
 
   return (
-    <section className="flex w-full flex-col gap-3">
-      <PageHeader
-        description="Live map of every Eluru polling booth — coloured by how many voters you have reached."
-        actions={
-          <button type="button" onClick={() => reload({ silent: true })} className={btnTool} aria-label="Refresh">
-            <RefreshCw className="h-3.5 w-3.5" />
-          </button>
-        }
-      />
-
-      <AlertBanner tone="danger">{error}</AlertBanner>
-
-      <div className="cp-map-stage">
-        {/* Map */}
-        <div className="cp-map-stage-canvas">
-          {loading && !data ? (
-            <div className="flex h-full min-h-[28rem] items-center justify-center bg-[var(--bg-muted)] text-sm text-[var(--muted)]">
-              Loading booth map…
-            </div>
-          ) : located.length ? (
-            <BoothLeafletMap
-              booths={filtered.length ? filtered : located}
-              selected={selected}
-              onSelect={setSelected}
-              className="h-full min-h-[28rem]"
-            />
-          ) : (
-            <div className="flex h-full min-h-[28rem] flex-col items-center justify-center gap-3 bg-[var(--bg-muted)] px-6 text-center">
-              <span className="inline-flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--brand)]/10 text-[var(--brand)]">
-                <MapPin className="h-7 w-7" />
-              </span>
-              <p className="text-base font-bold text-[var(--ink)]">No booth pins yet</p>
-              <p className="max-w-sm text-sm text-[var(--muted)]">
-                {canEdit
-                  ? 'Add latitude and longitude on a booth, or run the geocode script, and they will appear here.'
-                  : 'A coordinator can place booths on the map.'}
-              </p>
-            </div>
-          )}
+    <section className="cp-map-page">
+      {error ? (
+        <div className="absolute left-3 right-3 top-3 z-[600] max-w-lg">
+          <AlertBanner tone="danger">{error}</AlertBanner>
         </div>
+      ) : null}
 
-        {/* Floating HUD */}
-        <aside className="cp-map-hud">
-          <div className="cp-map-glass cp-map-hud-search">
-            <Search className="h-4 w-4 shrink-0 text-[var(--muted)]" />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Booth no. or station…"
-              className="min-w-0 flex-1 bg-transparent text-sm text-[var(--ink)] outline-none placeholder:text-[var(--muted)]"
-            />
-            {search ? (
-              <button type="button" onClick={() => setSearch('')} className="rounded-md p-0.5 text-[var(--muted)] hover:text-[var(--ink)]" aria-label="Clear">
-                <X className="h-3.5 w-3.5" />
-              </button>
-            ) : null}
-          </div>
+      <div ref={stageRef} className={`cp-map-layout ${fullscreen ? 'is-fullscreen' : ''}`}>
+        <aside className={`cp-map-panel ${mobileTab === 'list' ? 'is-mobile-show' : ''}`}>
+          <div className="cp-map-panel-head">
+            <div className="cp-map-search">
+              <Search className="h-4 w-4 shrink-0 text-[var(--muted)]" />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search booth # or station"
+                aria-label="Search booths"
+              />
+              {search ? (
+                <button type="button" onClick={() => setSearch('')} aria-label="Clear">
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
+            </div>
 
-          <div className="cp-map-glass flex flex-wrap gap-1.5 p-1.5">
-            {[
-              { id: 'all', label: 'All' },
-              { id: 'cold', label: 'Not reached' },
-              { id: 'warm', label: '1–49%' },
-              { id: 'hot', label: '50%+' },
-            ].map((f) => (
-              <button
-                key={f.id}
-                type="button"
-                onClick={() => setReachFilter(f.id)}
-                className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition ${
-                  reachFilter === f.id
-                    ? 'bg-[var(--brand)] text-white shadow-sm'
-                    : 'text-[var(--ink-soft)] hover:bg-[var(--bg-muted)]'
-                }`}
-              >
-                {f.label}
-              </button>
-            ))}
-          </div>
-
-          <div className="cp-map-glass grid grid-cols-3 gap-px overflow-hidden !p-0">
-            {[
-              { label: 'On map', value: fmt(filtered.length || located.length), icon: Crosshair },
-              { label: 'Voters', value: fmt(mappedVoters), icon: Users },
-              { label: 'Avg reach', value: `${avgReach}%`, icon: Navigation },
-            ].map((s) => (
-              <div key={s.label} className="flex flex-col gap-0.5 bg-[var(--bg-elevated)]/90 px-3 py-2.5">
-                <span className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
-                  <s.icon className="h-3 w-3" />
-                  {s.label}
-                </span>
-                <span className="text-lg font-extrabold tabular-nums tracking-tight text-[var(--ink)]">{s.value}</span>
-              </div>
-            ))}
-          </div>
-
-          <div className="cp-map-glass hidden gap-3 p-3 sm:flex">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--muted)]">Reach</p>
-            <ul className="flex flex-1 flex-wrap gap-x-3 gap-y-1">
-              {REACH_STEPS.map((s) => (
-                <li key={s.label} className="inline-flex items-center gap-1.5 text-[11px] text-[var(--ink-soft)]">
-                  <span className="h-2.5 w-2.5 rounded-full ring-1 ring-black/10" style={{ background: s.color }} />
-                  {s.label}
-                </li>
+            <div className="cp-map-filters">
+              {FILTERS.map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  className={reachFilter === f.id ? 'is-on' : ''}
+                  onClick={() => setReachFilter(f.id)}
+                >
+                  {f.label}
+                </button>
               ))}
-            </ul>
-          </div>
-        </aside>
+            </div>
 
-        {/* Selected booth card */}
-        {selectedBooth ? (
-          <div className="cp-map-glass cp-map-select">
-            <div className="flex items-start gap-3">
-              <span
-                className="inline-flex h-12 min-w-12 shrink-0 items-center justify-center rounded-2xl text-base font-extrabold text-white shadow-md"
-                style={{ background: reachStep(reachedPct(selectedBooth)).color }}
-              >
-                {selectedBooth.part_no}
+            <div className="cp-map-meta">
+              <span>
+                <strong>{fmt(filtered.length)}</strong> booths
               </span>
-              <div className="min-w-0 flex-1">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">Booth {selectedBooth.part_no}</p>
-                <p className="truncate text-sm font-bold leading-snug text-[var(--ink)]">
-                  {stationName(selectedBooth.polling_station_name, selectedBooth.part_no)}
-                </p>
-                <p className="mt-0.5 line-clamp-2 text-xs text-[var(--muted)]">{selectedBooth.polling_station_address || '—'}</p>
-              </div>
-              <button type="button" onClick={() => setSelected(null)} className="rounded-lg p-1.5 text-[var(--muted)] hover:bg-[var(--bg-muted)] hover:text-[var(--ink)]" aria-label="Close">
-                <X className="h-4 w-4" />
+              <span>
+                <strong>{fmt(sites.length)}</strong> pins
+              </span>
+              <button type="button" onClick={() => reload({ silent: true })} title="Refresh" aria-label="Refresh">
+                <RefreshCw className="h-3.5 w-3.5" />
               </button>
-            </div>
-            <div className="mt-3 grid grid-cols-3 gap-2 border-t border-[var(--line)] pt-3">
-              <div>
-                <p className="text-[10px] font-semibold uppercase text-[var(--muted)]">Voters</p>
-                <p className="text-sm font-bold tabular-nums text-[var(--ink)]">{fmt(selectedBooth.voters)}</p>
-              </div>
-              <div>
-                <p className="text-[10px] font-semibold uppercase text-[var(--muted)]">Reached</p>
-                <p className="text-sm font-bold tabular-nums text-[var(--ink)]">{reachedPct(selectedBooth)}%</p>
-              </div>
-              <div>
-                <p className="text-[10px] font-semibold uppercase text-[var(--muted)]">Coords</p>
-                <p className="truncate text-xs font-semibold tabular-nums text-[var(--ink-soft)]">
-                  {Number(selectedBooth.lat).toFixed(4)}, {Number(selectedBooth.lng).toFixed(4)}
-                </p>
-              </div>
-            </div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => setOpenPart(selectedBooth.part_no)}
-                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-[var(--brand)] px-3 py-2.5 text-sm font-bold text-white transition hover:brightness-110"
-              >
-                Open booth
-              </button>
-              <a
-                href={`https://www.google.com/maps?q=${selectedBooth.lat},${selectedBooth.lng}`}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-[var(--line)] px-3 py-2.5 text-sm font-semibold text-[var(--ink-soft)] transition hover:border-[var(--brand)] hover:text-[var(--brand)]"
-              >
-                <Navigation className="h-3.5 w-3.5" />
-                Maps
-              </a>
             </div>
           </div>
-        ) : null}
 
-        {/* Compact booth rail */}
-        <div className={`cp-map-rail ${listOpen ? 'is-open' : ''}`}>
-          <button type="button" className="cp-map-rail-toggle" onClick={() => setListOpen((v) => !v)}>
-            <span className="font-bold text-[var(--ink)]">{fmt(list.length)} booths</span>
-            <span className="text-xs text-[var(--muted)]">{listOpen ? 'Hide list' : 'Show list'}</span>
-          </button>
-          {listOpen ? (
-            <ul className="cp-map-rail-list">
-              {list.map((b) => {
+          {selectedSite ? (
+            <div className="cp-map-panel-sel">
+              <div className="flex items-start gap-2">
+                <span className="cp-map-badge" style={{ background: '#db2777' }}>
+                  {selectedSite.count === 1 ? selectedSite.booths[0].part_no : selectedSite.count}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+                    {selectedSite.count === 1 ? 'On map' : `${selectedSite.count} booths share this pin`}
+                  </p>
+                  <p className="truncate text-sm font-bold text-[var(--ink)]">
+                    {activeBooth
+                      ? stationName(activeBooth.polling_station_name, activeBooth.part_no)
+                      : 'Tap a booth below — map will zoom here'}
+                  </p>
+                  <p className="mt-0.5 text-[11px] tabular-nums text-[var(--muted)]">
+                    {Number(selectedSite.lat).toFixed(5)}, {Number(selectedSite.lng).toFixed(5)}
+                  </p>
+                </div>
+                <button type="button" className="cp-map-icon-btn" onClick={clearSelection} aria-label="Clear selection">
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          <ul className="cp-map-panel-list" ref={listRef}>
+            {loading && !data ? (
+              <li className="cp-map-empty">Loading booths…</li>
+            ) : list.length ? (
+              list.map((b) => {
                 const pct = reachedPct(b);
-                const step = reachStep(pct);
-                const active = selected === b.part_no;
+                const active = pickedPart === b.part_no;
                 return (
-                  <li key={b.part_no}>
-                    <button
-                      type="button"
-                      onClick={() => setSelected(b.part_no)}
-                      className={`cp-map-rail-item ${active ? 'is-active' : ''}`}
-                    >
-                      <span className="cp-map-rail-badge" style={{ background: step.color }}>
+                  <li key={b.part_no} data-part={b.part_no}>
+                    <button type="button" className={`cp-map-row ${active ? 'is-active' : ''}`} onClick={() => pickBooth(b.part_no)}>
+                      <span className="cp-map-badge" style={{ background: active ? '#db2777' : boothTone(pct) }}>
                         {b.part_no}
                       </span>
                       <span className="min-w-0 flex-1 text-left">
-                        <span className="block truncate text-xs font-bold text-[var(--ink)]">
+                        <span className="block truncate text-[13px] font-semibold text-[var(--ink)]">
                           {stationName(b.polling_station_name, b.part_no)}
                         </span>
-                        <span className="block text-[10px] tabular-nums text-[var(--muted)]">
+                        <span className="block text-[11px] text-[var(--muted)]">
                           {fmt(b.voters)} voters · {pct}% reached
                         </span>
                       </span>
+                      <MapPin className={`h-3.5 w-3.5 shrink-0 ${active ? 'text-[#db2777]' : 'text-[var(--muted)]'}`} />
                     </button>
                   </li>
                 );
-              })}
-              {!list.length ? (
-                <li className="px-3 py-6 text-center text-xs text-[var(--muted)]">No booths match this filter.</li>
-              ) : null}
-            </ul>
+              })
+            ) : (
+              <li className="cp-map-empty">
+                {located.length ? 'No booths match.' : canEdit ? 'No coordinates yet.' : 'No booths on the map yet.'}
+              </li>
+            )}
+          </ul>
+
+          {activeBooth ? (
+            <div className="cp-map-panel-foot">
+              <button type="button" className="cp-map-primary" onClick={() => setOpenPart(activeBooth.part_no)}>
+                Open booth {activeBooth.part_no}
+              </button>
+              <a
+                className="cp-map-secondary"
+                href={`https://www.google.com/maps/dir/?api=1&destination=${activeBooth.lat},${activeBooth.lng}`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <Navigation className="h-3.5 w-3.5" />
+                Go
+              </a>
+            </div>
           ) : null}
+        </aside>
+
+        <div className={`cp-map-viewport ${mobileTab === 'map' ? 'is-mobile-show' : ''}`}>
+          {loading && !data ? (
+            <div className="cp-map-loading">Loading map…</div>
+          ) : located.length ? (
+            <BoothLeafletMap
+              booths={filtered}
+              selectedKey={siteKey}
+              pickedPart={pickedPart}
+              focusSeq={focusSeq}
+              onSelectSite={selectSite}
+              locateNonce={locateNonce}
+              fitNonce={fitNonce}
+              className="h-full w-full"
+            />
+          ) : (
+            <div className="cp-map-loading flex-col gap-2">
+              <MapPin className="h-7 w-7 text-[var(--brand)]" />
+              <p className="font-semibold text-[var(--ink)]">No booth pins yet</p>
+            </div>
+          )}
+
+          {/* Floating card on map when something is selected */}
+          {selectedSite ? (
+            <div className="cp-map-float">
+              <div className="cp-map-float-top">
+                <span className="cp-map-badge" style={{ background: '#db2777' }}>
+                  {activeBooth ? activeBooth.part_no : selectedSite.count}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-bold text-[var(--ink)]">
+                    {activeBooth
+                      ? stationName(activeBooth.polling_station_name, activeBooth.part_no)
+                      : `${selectedSite.count} booths at this pin`}
+                  </p>
+                  <p className="text-[11px] text-[var(--muted)]">
+                    {activeBooth
+                      ? `${fmt(activeBooth.voters)} voters · ${reachedPct(activeBooth)}% reached`
+                      : 'Choose a booth from the list'}
+                  </p>
+                </div>
+                <button type="button" className="cp-map-icon-btn" onClick={clearSelection} aria-label="Close">
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              {activeBooth ? (
+                <div className="cp-map-float-actions">
+                  <button type="button" className="cp-map-primary" onClick={() => setOpenPart(activeBooth.part_no)}>
+                    Details
+                  </button>
+                  <a
+                    className="cp-map-secondary"
+                    href={`https://www.google.com/maps/dir/?api=1&destination=${selectedSite.lat},${selectedSite.lng}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <Navigation className="h-3.5 w-3.5" />
+                    Directions
+                  </a>
+                  {selectedSite.count > 1 ? (
+                    <button type="button" className="cp-map-secondary" onClick={() => setMobileTab('list')}>
+                      <List className="h-3.5 w-3.5" />
+                      List
+                    </button>
+                  ) : null}
+                </div>
+              ) : (
+                <button type="button" className="cp-map-primary mt-2 w-full" onClick={() => setMobileTab('list')}>
+                  Show booths at this pin
+                </button>
+              )}
+            </div>
+          ) : null}
+
+          <div className="cp-map-fabs">
+            <button type="button" title="Fit all pins" onClick={() => setFitNonce((n) => n + 1)}>
+              <Crosshair className="h-4 w-4" />
+            </button>
+            <button type="button" title="My location" onClick={() => setLocateNonce((n) => n + 1)}>
+              <LocateFixed className="h-4 w-4" />
+            </button>
+            <button type="button" title={fullscreen ? 'Exit fullscreen' : 'Fullscreen'} onClick={toggleFullscreen}>
+              {fullscreen ? <Minimize2 className="h-4 w-4" /> : <Expand className="h-4 w-4" />}
+            </button>
+          </div>
+        </div>
+
+        {/* Mobile bottom switcher */}
+        <div className="cp-map-mobile-tabs">
+          <button type="button" className={mobileTab === 'map' ? 'is-on' : ''} onClick={() => setMobileTab('map')}>
+            <MapIcon className="h-4 w-4" />
+            Map
+          </button>
+          <button type="button" className={mobileTab === 'list' ? 'is-on' : ''} onClick={() => setMobileTab('list')}>
+            <List className="h-4 w-4" />
+            Booths
+          </button>
         </div>
       </div>
-
-      <p className="text-center text-[11px] text-[var(--muted)]">
-        Showing {fmt(filtered.length || located.length)} of {fmt(booths.length)} booths · {fmt(voterShare)} voters on the roll
-        {booths.length - located.length ? ` · ${booths.length - located.length} still need a pin` : ''}
-      </p>
 
       {openPart != null ? (
         <BoothModal part={openPart} canEdit={canEdit} onClose={() => setOpenPart(null)} onSaved={() => reload({ silent: true })} />

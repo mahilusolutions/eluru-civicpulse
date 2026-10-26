@@ -7,6 +7,8 @@ import { SidebarProvider, useSidebar } from './SidebarContext';
 
 function ShellFrame() {
   const { collapsed } = useSidebar();
+  const location = useLocation();
+  const flush = location.pathname.startsWith('/app/map');
 
   return (
     <div className="h-screen overflow-hidden bg-[var(--bg)] text-[var(--ink)]">
@@ -19,7 +21,13 @@ function ShellFrame() {
       >
         <TopBar />
         <main className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain">
-          <div className="cp-page mx-auto h-full w-full min-w-0 max-w-[100%] px-3 py-3 sm:px-4 lg:px-4 lg:py-4">
+          <div
+            className={
+              flush
+                ? 'cp-page cp-page--flush h-full w-full min-w-0'
+                : 'cp-page mx-auto h-full w-full min-w-0 max-w-[100%] px-3 py-3 sm:px-4 lg:px-4 lg:py-4'
+            }
+          >
             <Outlet />
           </div>
         </main>

@@ -1,13 +1,8 @@
 /**
- * Fill public.booths.lat / lng from real map geocoding (OpenStreetMap Nominatim).
+ * Fill public.booths.lat / lng from real OpenStreetMap geocoding (Eluru city only).
  *
- * Sources used (in order), all real lookups — nothing invented:
- *   1. English polling-station text from elections.in (matched by booth / part no.)
- *   2. Our booth name + address (as stored)
- *   3. PIN code + Eluru (neighbourhood-level when the building is not in OSM)
- *
- *   node scripts/geocodeBooths.js              # dry run
- *   node scripts/geocodeBooths.js --apply      # write lat/lng
+ *   node scripts/geocodeBooths.js              # dry run (missing only)
+ *   node scripts/geocodeBooths.js --apply      # write lat/lng for missing
  *   node scripts/geocodeBooths.js --apply --overwrite
  */
 const path = require('path');
@@ -19,8 +14,9 @@ const OVERWRITE = process.argv.includes('--overwrite');
 const UA = 'CivicPulse-Eluru/1.0 (campaign ops; contact: eluru.mahilusolutions.com)';
 const SLEEP_MS = 1100;
 
-/** Accept only points inside / near Eluru district. */
-const BOX = { minLat: 16.45, maxLat: 17.05, minLng: 80.85, maxLng: 81.45 };
+/** Eluru Municipal Corporation / constituency window. */
+const BOX = { minLat: 16.68, maxLat: 16.78, minLng: 81.03, maxLng: 81.17 };
+const VIEWBOX = `${BOX.minLng},${BOX.maxLat},${BOX.maxLng},${BOX.minLat}`;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -35,40 +31,58 @@ function clean(s) {
     .trim();
 }
 
-/** Drop room/side OCR noise so the geocoder sees the building / area. */
 function simplifyPlace(s) {
   return clean(s)
-    .replace(/\b(room|class|side|block|building|shed|northern|southern|eastern|western|north|south|east|west|1st|2nd|3rd|4th|5th|new|old)\b/gi, ' ')
+    .replace(/\b(room|class|side|block|building|shed|northern|southern|eastern|western|north|south|east|west|1st|2nd|3rd|4th|5th|new|old|mp|ups|ps|high school|school)\b/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
-async function nominatim(query) {
+function hasLatin(s) {
+  return /[A-Za-z]{3,}/.test(s || '');
+}
+
+function latinOnly(s) {
+  return clean(s)
+    .replace(/[^\x00-\x7F]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function nominatim(query, { bounded = true } = {}) {
   const params = new URLSearchParams({
     format: 'json',
-    limit: '5',
+    limit: '8',
     countrycodes: 'in',
     addressdetails: '0',
     q: query,
-    viewbox: '80.85,17.05,81.45,16.45',
-    bounded: '0',
+    viewbox: VIEWBOX,
+    bounded: bounded ? '1' : '0',
   });
-  const url = `https://nominatim.openstreetmap.org/search?${params}`;
-  const res = await fetch(url, { headers: { 'User-Agent': UA, Accept: 'application/json' } });
-  if (!res.ok) throw new Error(`Nominatim HTTP ${res.status}`);
-  const rows = await res.json();
-  for (const r of rows) {
-    const lat = Number(r.lat);
-    const lng = Number(r.lon);
-    if (Number.isFinite(lat) && Number.isFinite(lng) && inBox(lat, lng)) {
-      return {
-        lat,
-        lng,
-        label: r.display_name,
-        importance: Number(r.importance) || 0,
-        source: 'nominatim',
-      };
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const res = await fetch(`https://nominatim.openstreetmap.org/search?${params}`, {
+      headers: { 'User-Agent': UA, Accept: 'application/json' },
+    });
+    if (res.status === 429 || res.status === 503) {
+      await sleep(SLEEP_MS * (attempt + 2));
+      continue;
     }
+    if (!res.ok) return null;
+    const rows = await res.json();
+    for (const r of rows) {
+      const lat = Number(r.lat);
+      const lng = Number(r.lon);
+      if (Number.isFinite(lat) && Number.isFinite(lng) && inBox(lat, lng)) {
+        return {
+          lat,
+          lng,
+          label: r.display_name,
+          importance: Number(r.importance) || 0,
+          source: 'nominatim',
+        };
+      }
+    }
+    return null;
   }
   return null;
 }
@@ -76,13 +90,14 @@ async function nominatim(query) {
 async function photon(query) {
   const params = new URLSearchParams({
     q: query,
-    limit: '5',
+    limit: '8',
     lang: 'en',
     lat: '16.71',
     lon: '81.10',
   });
-  const url = `https://photon.komoot.io/api/?${params}`;
-  const res = await fetch(url, { headers: { 'User-Agent': UA, Accept: 'application/json' } });
+  const res = await fetch(`https://photon.komoot.io/api/?${params}`, {
+    headers: { 'User-Agent': UA, Accept: 'application/json' },
+  });
   if (!res.ok) return null;
   const data = await res.json();
   for (const f of data.features || []) {
@@ -100,16 +115,11 @@ async function photon(query) {
   return null;
 }
 
-/**
- * elections.in English list for Eluru AC — part_no → station / area text.
- * Page is older than the current roll; used only as an English geocode hint.
- */
+/** elections.in English polling list for Eluru AC. */
 async function loadEnglishBoothHints() {
   const url = 'https://www.elections.in/andhra-pradesh/polling-stations/eluru.html';
   const html = await fetch(url, { headers: { 'User-Agent': UA } }).then((r) => r.text());
   const map = new Map();
-  // Rows look like: | locality | 7 | Mp Up School Chodimella,... |
-  // or: | | 8 | Mp Up School... |
   const re = /\|([^|]*)\|\s*(\d{1,3})\s*\|\s*([^|]+)\|/g;
   let m;
   let lastLocality = '';
@@ -127,47 +137,66 @@ async function loadEnglishBoothHints() {
 
 const cache = new Map();
 
+async function geocodeOne(query) {
+  const key = query.toLowerCase();
+  if (cache.has(key)) {
+    const hit = cache.get(key);
+    return hit ? { ...hit, query, cached: true } : null;
+  }
+  // Prefer Photon first (more reliable under load); Nominatim as backup
+  await sleep(SLEEP_MS);
+  let hit = await photon(query);
+  if (!hit) {
+    await sleep(SLEEP_MS);
+    hit = await nominatim(query, { bounded: true });
+  }
+  if (!hit) {
+    await sleep(SLEEP_MS);
+    hit = await nominatim(query, { bounded: false });
+  }
+  cache.set(key, hit);
+  return hit ? { ...hit, query, cached: false } : null;
+}
+
 async function geocodeQueries(queries) {
   for (const q of queries) {
-    const key = q.toLowerCase();
-    if (!key || key.length < 5) continue;
-    if (cache.has(key)) {
-      const hit = cache.get(key);
-      if (hit) return { ...hit, query: q, cached: true };
-      continue;
-    }
-    await sleep(SLEEP_MS);
-    let hit = await nominatim(q);
-    if (!hit) {
-      await sleep(SLEEP_MS);
-      hit = await photon(q);
-    }
-    cache.set(key, hit);
-    if (hit) return { ...hit, query: q, cached: false };
+    if (!q || q.length < 5) continue;
+    const hit = await geocodeOne(q);
+    if (hit) return hit;
   }
   return null;
 }
 
 function buildQueries(booth, eng) {
   const qs = [];
-  const pin = booth.pin_code && /^\d{6}$/.test(booth.pin_code) ? booth.pin_code : null;
+  const pin = booth.pin_code && /^\d{6}$/.test(String(booth.pin_code)) ? String(booth.pin_code) : null;
   const suffix = 'Eluru, Andhra Pradesh, India';
 
   if (eng?.area) {
     const area = simplifyPlace(eng.area);
-    qs.push(`${area}, ${suffix}`);
-    if (eng.locality) qs.push(`${simplifyPlace(eng.locality)}, ${suffix}`);
-    // First clause before comma often has the building
-    const head = area.split(',')[0];
-    if (head && head.length > 6) qs.push(`${head}, ${suffix}`);
+    if (area.length > 4) {
+      qs.push(`${area}, ${suffix}`);
+      const head = area.split(',')[0].trim();
+      if (head.length > 5) qs.push(`${head}, ${suffix}`);
+    }
+    if (eng.locality) {
+      const loc = simplifyPlace(eng.locality);
+      if (loc.length > 3) {
+        qs.push(`${loc}, ${suffix}`);
+        if (area) qs.push(`${loc}, ${area.split(',')[0]}, ${suffix}`);
+      }
+    }
   }
+
+  const areaName = clean(booth.area_name);
+  if (areaName && hasLatin(areaName)) qs.push(`${simplifyPlace(latinOnly(areaName))}, ${suffix}`);
+  if (areaName) qs.push(`${areaName}, ${suffix}`);
 
   const name = clean(booth.polling_station_name);
   const addr = clean(booth.polling_station_address);
-  // Prefer Latin-heavy fragments (OCR sometimes mixes scripts)
-  const latinAddr = addr.replace(/[^\x00-\x7F]+/g, ' ').replace(/\s+/g, ' ').trim();
-  const latinName = name.replace(/[^\x00-\x7F]+/g, ' ').replace(/\s+/g, ' ').trim();
-  if (latinAddr.length > 8) qs.push(`${simplifyPlace(latinAddr)}, ${suffix}`);
+  const latinAddr = latinOnly(addr);
+  const latinName = latinOnly(name);
+  if (latinAddr.length > 6) qs.push(`${simplifyPlace(latinAddr)}, ${suffix}`);
   if (latinName.length > 4) qs.push(`${latinName}, ${suffix}`);
   if (addr) qs.push(`${simplifyPlace(addr)}, ${suffix}`);
   if (name) qs.push(`${name}, ${suffix}`);
@@ -175,9 +204,12 @@ function buildQueries(booth, eng) {
   const town = clean(booth.main_town).replace(/^[^:]*[:/]\s*/, '');
   if (town && town.length > 3 && town.length < 80) qs.push(`${town}, ${suffix}`);
 
-  if (pin) qs.push(`${pin}, Eluru, Andhra Pradesh, India`);
+  // PIN is last resort — neighbourhood level inside Eluru
+  if (pin) {
+    qs.push(`${pin}, Eluru, Andhra Pradesh, India`);
+    qs.push(`postal code ${pin}, Eluru, India`);
+  }
 
-  // Dedupe
   const seen = new Set();
   return qs.filter((q) => {
     const k = q.toLowerCase();
@@ -204,9 +236,11 @@ function buildQueries(booth, eng) {
     ORDER BY part_no`;
 
   const todo = booths.filter((b) => OVERWRITE || b.lat == null || b.lng == null);
-  console.log(`Booths: ${booths.length}, to geocode: ${todo.length}, mode: ${APPLY ? 'APPLY' : 'DRY RUN'}${OVERWRITE ? ' overwrite' : ''}`);
+  console.log(
+    `Booths: ${booths.length}, to geocode: ${todo.length}, mode: ${APPLY ? 'APPLY' : 'DRY RUN'}${OVERWRITE ? ' overwrite' : ''}`
+  );
+  console.log(`Eluru box: ${BOX.minLat}–${BOX.maxLat} N, ${BOX.minLng}–${BOX.maxLng} E`);
 
-  const report = [];
   let ok = 0;
   let fail = 0;
 
@@ -217,20 +251,10 @@ function buildQueries(booth, eng) {
     const hit = await geocodeQueries(queries);
     if (!hit) {
       fail += 1;
-      report.push({ part: b.part_no, status: 'fail', tried: queries.slice(0, 3) });
-      process.stdout.write(`  [${i + 1}/${todo.length}] part ${b.part_no}: FAIL\n`);
+      process.stdout.write(`  [${i + 1}/${todo.length}] part ${b.part_no}: FAIL (${queries.length} queries)\n`);
       continue;
     }
     ok += 1;
-    report.push({
-      part: b.part_no,
-      status: 'ok',
-      lat: hit.lat,
-      lng: hit.lng,
-      source: hit.source,
-      query: hit.query,
-      label: hit.label?.slice(0, 90),
-    });
     process.stdout.write(
       `  [${i + 1}/${todo.length}] part ${b.part_no}: ${hit.lat.toFixed(5)},${hit.lng.toFixed(5)} via ${hit.source}${hit.cached ? ' (cache)' : ''}\n`
     );
@@ -244,16 +268,6 @@ function buildQueries(booth, eng) {
 
   console.log(`\nDone: ${ok} located, ${fail} failed, of ${todo.length}`);
   if (!APPLY) console.log('DRY RUN — nothing saved. Add --apply to write lat/lng.');
-
-  const out = path.join(__dirname, '..', 'data', 'geocode-booths-report.json');
-  try {
-    const fs = require('fs');
-    fs.mkdirSync(path.dirname(out), { recursive: true });
-    fs.writeFileSync(out, JSON.stringify({ at: new Date().toISOString(), apply: APPLY, ok, fail, report }, null, 2));
-    console.log(`Report: ${out}`);
-  } catch {
-    /* optional */
-  }
 })()
   .catch((e) => {
     console.error(e);
