@@ -722,6 +722,12 @@ app.get(
       where: { partNo: voter.partNo },
       include: { ward: { select: { wardNo: true, name: true } } },
     });
+    // Cover-page fields (Telugu rolls) live on the booth row — roll_info.assembly is often empty for TEL PDFs.
+    const [boothCover] = boothRow
+      ? await prisma.$queryRaw`
+          SELECT main_town, pin_code, publication_date, district
+          FROM public.booths WHERE part_no = ${voter.partNo}`
+      : [null];
     const booth = boothRow && {
       part_no: boothRow.partNo,
       polling_station_name: boothRow.pollingStationName,
@@ -731,6 +737,12 @@ app.get(
       agent_name: boothRow.agentName,
       coordinator_name: boothRow.coordinatorName,
       voter_count: boothRow.voterCount,
+      ac_code: boothRow.acCode || 'S01-65',
+      ac_name: boothRow.acName || 'Eluru',
+      main_town: boothCover?.main_town || null,
+      pin_code: boothCover?.pin_code || null,
+      publication_date: boothCover?.publication_date || null,
+      district: boothCover?.district || null,
     };
 
     ok(res, {

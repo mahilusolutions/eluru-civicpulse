@@ -432,14 +432,25 @@ export default function VoterModal({ id, onClose, onSelect, onChanged }) {
                 </div>
               </div>
 
-              {roll ? (
-                <p className="border-t border-[var(--line)] pt-2.5 text-xs text-[var(--muted)]">
-                  <span className="font-semibold text-[var(--ink-soft)]">Polling area:</span> {roll.assembly}
-                  {roll.main_town ? ` · ${roll.main_town}` : ''}
-                  {roll.pin_code ? ` · ${roll.pin_code}` : ''}
-                  {roll.publication_date ? ` · List published ${roll.publication_date}` : ''}
-                </p>
-              ) : null}
+              {(() => {
+                const booth = voter?.booth;
+                // Prefer parsed roll cover; else booth row (any language). Never hardcode a place name.
+                const assembly =
+                  roll?.assembly ||
+                  (booth?.ac_name
+                    ? `${booth.ac_name}${booth.ac_code ? ` (${booth.ac_code})` : ''}`
+                    : null);
+                const town = roll?.main_town || booth?.main_town || null;
+                const pin = roll?.pin_code || booth?.pin_code || null;
+                const published = roll?.publication_date || booth?.publication_date || null;
+                const bits = [assembly, town, pin, published ? `List published ${published}` : null].filter(Boolean);
+                if (!bits.length) return null;
+                return (
+                  <p className="border-t border-[var(--line)] pt-2.5 text-xs text-[var(--muted)]">
+                    <span className="font-semibold text-[var(--ink-soft)]">Polling area:</span> {bits.join(' · ')}
+                  </p>
+                );
+              })()}
             </div>
           ) : null}
         </div>
