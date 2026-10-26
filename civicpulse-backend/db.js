@@ -11,10 +11,39 @@ const prisma = new PrismaClient({
   log: process.env.PRISMA_LOG === '1' ? ['query', 'error', 'warn'] : ['error'],
 });
 
+/** Migrate electors.phone from plain text → text[] (keeps any existing single number as a 1-element array). */
+async function ensurePhoneArrayColumn() {
+  const rows = await prisma.$queryRaw`
+    SELECT data_type, udt_name
+    FROM information_schema.columns
+    WHERE table_schema = 'voterdb' AND table_name = 'electors' AND column_name = 'phone'`;
+  if (!rows.length) {
+    await prisma.$executeRawUnsafe('ALTER TABLE voterdb.electors ADD COLUMN phone text[]');
+    return;
+  }
+  if (rows[0].udt_name === '_text' || rows[0].data_type === 'ARRAY') {
+    await prisma.$executeRawUnsafe(`UPDATE voterdb.electors SET phone = '{}'::text[] WHERE phone IS NULL`);
+    await prisma.$executeRawUnsafe(`ALTER TABLE voterdb.electors ALTER COLUMN phone SET DEFAULT '{}'::text[]`);
+    return;
+  }
+  await prisma.$executeRawUnsafe('DROP INDEX IF EXISTS voterdb.idx_electors_phone_trgm');
+  await prisma.$executeRawUnsafe(`
+    ALTER TABLE voterdb.electors
+      ALTER COLUMN phone TYPE text[]
+      USING CASE
+        WHEN phone IS NULL OR btrim(phone) = '' THEN '{}'::text[]
+        ELSE ARRAY[btrim(phone)]
+      END`);
+  await prisma.$executeRawUnsafe(`ALTER TABLE voterdb.electors ALTER COLUMN phone SET DEFAULT '{}'::text[]`);
+  await prisma.$executeRawUnsafe(`ALTER TABLE voterdb.electors ALTER COLUMN phone SET NOT NULL`);
+}
+
 /** Indexes that keep search and filters fast once all ~250k voters are loaded. Each one is optional. */
 async function ensureSearchIndexes() {
+  await ensurePhoneArrayColumn().catch((err) => {
+    console.warn('phone array migrate:', err.message);
+  });
   const steps = [
-    'ALTER TABLE voterdb.electors ADD COLUMN IF NOT EXISTS phone text',
     'CREATE EXTENSION IF NOT EXISTS pg_trgm',
     'CREATE INDEX IF NOT EXISTS idx_electors_name_trgm ON voterdb.electors USING gin (name gin_trgm_ops)',
     'CREATE INDEX IF NOT EXISTS idx_electors_epic_trgm ON voterdb.electors USING gin (epic gin_trgm_ops)',
@@ -27,7 +56,8 @@ async function ensureSearchIndexes() {
 
     // Phone numbers are matched to voters by Voter ID (EPIC), so exact lookups by EPIC must be instant; phones are searchable.
     'CREATE INDEX IF NOT EXISTS idx_electors_epic ON voterdb.electors (epic)',
-    'CREATE INDEX IF NOT EXISTS idx_electors_phone_trgm ON voterdb.electors USING gin (phone gin_trgm_ops)',
+    // text[]: GIN for containment (ILIKE uses array_to_string; expression index is not immutable)
+    'CREATE INDEX IF NOT EXISTS idx_electors_phone_gin ON voterdb.electors USING gin (phone)',
 
     // Search box: section (road) name too.
     'CREATE INDEX IF NOT EXISTS idx_electors_section_trgm ON voterdb.electors USING gin (section_name gin_trgm_ops)',

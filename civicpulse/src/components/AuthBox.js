@@ -44,12 +44,12 @@ export default function AuthBox() {
     >
       <div className="mb-4 flex items-center gap-2 text-[var(--brand)]">
         <ShieldCheck className="h-4 w-4" />
-        <p className="text-[11px] font-semibold uppercase tracking-[0.12em]">Secure workspace</p>
+        <p className="text-[11px] font-semibold uppercase tracking-[0.12em]">Eluru campaign login</p>
       </div>
 
       <h2 className="text-xl font-bold tracking-tight sm:text-2xl">Sign in to CivicPulse</h2>
       <p className="mt-1.5 text-sm leading-relaxed text-[var(--muted)]">
-        Use the username and password you received after your access was approved.
+        Use the username and password given after your access was approved.
       </p>
 
       {isAuthenticated ? (
@@ -58,7 +58,7 @@ export default function AuthBox() {
             You are signed in as <span className="font-semibold">{fullName}</span> ({roleLabel}).
           </AlertBanner>
           <Link to="/app/dashboard" className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--brand)] px-4 py-3 text-sm font-bold text-white transition hover:brightness-110">
-            Continue to workspace
+            Go to dashboard
             <ArrowRight className="h-4 w-4" />
           </Link>
         </div>

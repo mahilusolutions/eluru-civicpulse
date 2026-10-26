@@ -64,7 +64,7 @@ function EditForm({ voter, role, onCancel, onSaved }) {
     age: voter.age ?? '',
     gender: voter.gender || 'U',
     epic: voter.epic || '',
-    phone: voter.phone || '',
+    phone: Array.isArray(voter.phone) ? voter.phone.join(', ') : voter.phone || '',
     status: voter.status || 'active',
     support_lean: voter.support_lean || 'unknown',
   });
@@ -111,7 +111,14 @@ function EditForm({ voter, role, onCancel, onSaved }) {
           <input value={f.house_no} onChange={set('house_no')} maxLength={40} className={`${inputClass} !py-2`} />
         </Input>
         <Input label="Phone">
-          <input value={f.phone} onChange={set('phone')} inputMode="tel" maxLength={20} placeholder="Optional" className={`${inputClass} !py-2`} />
+          <input
+            value={f.phone}
+            onChange={set('phone')}
+            inputMode="tel"
+            maxLength={80}
+            placeholder="One or more, comma-separated"
+            className={`${inputClass} !py-2`}
+          />
         </Input>
         <Input label="Age">
           <input value={f.age} onChange={set('age')} type="number" min="18" max="120" inputMode="numeric" className={`${inputClass} !py-2`} />
@@ -348,7 +355,9 @@ export default function VoterModal({ id, onClose, onSelect, onChanged }) {
                     </Row>
                     {voter.address_note ? <Row label="Address note">{voter.address_note}</Row> : null}
                     <Row label="Road">{road}</Row>
-                    {voter.phone ? <Row label="Phone">{voter.phone}</Row> : null}
+                    {voter.phone && (Array.isArray(voter.phone) ? voter.phone.length : true) ? (
+                      <Row label="Phone">{Array.isArray(voter.phone) ? voter.phone.join(', ') : voter.phone}</Row>
+                    ) : null}
                     {voter.status ? <Row label="Status">{label(voter.status)}</Row> : null}
                     {voter.support_lean ? <Row label="Support">{label(voter.support_lean)}</Row> : null}
                   </dl>

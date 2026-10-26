@@ -544,10 +544,10 @@ const STATUS_TONES = {
 };
 
 const NAV_LINKS = [
-  { href: '#about', label: 'What it is' },
-  { href: '#pipeline', label: 'Roll to records' },
+  { href: '#about', label: 'About' },
+  { href: '#pipeline', label: 'Roll ingest' },
   { href: '#workflow', label: 'How it works' },
-  { href: '#modules', label: 'Modules' },
+  { href: '#modules', label: 'Screens' },
   { href: '#roles', label: 'Roles' },
 ];
 
@@ -652,7 +652,7 @@ export default function LandingPage() {
               className="lp-hero-in max-w-4xl text-[clamp(2.4rem,5.4vw,4.4rem)] font-extrabold leading-[1.04] tracking-tight"
               style={{ '--d': '120ms' }}
             >
-              One campaign desk for
+              Eluru booth and voter list for
               <span className="block min-h-[1.1em] [perspective:600px]">
                 <RotatingWord />
               </span>
@@ -667,10 +667,10 @@ export default function LandingPage() {
               className="lp-hero-in mt-3 max-w-2xl text-sm leading-relaxed text-white/70 sm:text-base"
               style={{ '--d': '320ms' }}
             >
-              CivicPulse turns Eluru’s{' '}
-              <span className="font-semibold text-white">247 voter-list PDFs</span> into
-              searchable voter records. The campaign office, coordinators, booth agents and
-              volunteers then work from that same live data, right up to polling day.
+              Search Eluru’s{' '}
+              <span className="font-semibold text-white">247 booth voter-list PDFs</span>,
+              assign field teams, log visits, and track polling day — one list for the
+              campaign office, coordinators, booth agents and volunteers.
             </p>
 
             <div
@@ -681,7 +681,7 @@ export default function LandingPage() {
                 href="#login"
                 className="group inline-flex items-center gap-2 rounded-xl bg-eluru-gold px-5 py-3 text-sm font-bold text-[#0F1B2D] shadow-glow transition hover:-translate-y-0.5 hover:bg-[#ffc94a]"
               >
-                Open the workspace
+                Sign in
                 <ArrowRight className="h-4 w-4 transition group-hover:translate-x-1" />
               </a>
               <Link
@@ -729,7 +729,7 @@ export default function LandingPage() {
               <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-eluru-gold/20 text-eluru-gold">
                 <ScanLine className="h-3.5 w-3.5" />
               </span>
-              Voter-list files → voter records
+              Booth PDF → voter records
             </div>
           </div>
         </div>
@@ -761,8 +761,8 @@ export default function LandingPage() {
       {/* What it is */}
       <section id="about" className={`w-full scroll-mt-16 py-16 lg:py-20 ${pad}`}>
         <SectionHead
-          eyebrow="What is CivicPulse"
-          title="Built for the real problems of a city campaign"
+          eyebrow="About"
+          title="Made for Eluru field work"
           lead={SOLUTION}
         />
         <div className="mt-10 grid gap-4 md:grid-cols-3">
@@ -789,9 +789,9 @@ export default function LandingPage() {
             <CheckCircle2 className="h-5 w-5" />
           </span>
           <p className="text-sm leading-relaxed">
-            <span className="font-bold">CivicPulse gives every team one source of truth:</span>{' '}
-            the same voter list, the same booth status and the same issue log, each filtered
-            to what that person’s role needs.
+            <span className="font-bold">Everyone works from the same list:</span>{' '}
+            the same voters, booth status and issue log, filtered to what that person’s role
+            needs.
           </p>
         </Reveal>
       </section>
@@ -802,9 +802,9 @@ export default function LandingPage() {
         className={`w-full scroll-mt-16 border-y border-[var(--line)] bg-[var(--bg-muted)] py-16 lg:py-20 ${pad}`}
       >
         <SectionHead
-          eyebrow="From voter list to voter record"
-          title="How a voter-list file becomes searchable voters"
-          lead="Each booth’s voter list arrives as a scanned PDF. CivicPulse reads it page by page and saves every voter it finds, with progress you can watch on the Data screen."
+          eyebrow="Roll ingest"
+          title="How a booth PDF becomes voter records"
+          lead="Each booth’s voter list arrives as a scanned PDF. CivicPulse reads it page by page and saves every voter it finds. Progress shows on the Data screen."
         />
         <div className="mt-10 grid items-start gap-8 lg:grid-cols-[1fr_1fr]">
           <Reveal>
@@ -822,8 +822,8 @@ export default function LandingPage() {
           <div>
             <SectionHead
               eyebrow="247 parts, one picture"
-              title="See every Eluru booth at a glance"
-              lead="Each part is a polling station with its own voter list, booth agent and coordinator. CivicPulse tracks coverage % per booth, so HQ can see which areas need more people today."
+              title="All 247 Eluru booths in one view"
+              lead="Each part is a polling station with its own voter list, booth agent and coordinator. Coverage % per booth shows HQ which areas need more people today."
             />
             <Reveal delay={150} className="mt-6 grid grid-cols-3 gap-3">
               {[
@@ -858,9 +858,9 @@ export default function LandingPage() {
         className={`w-full scroll-mt-16 border-y border-[var(--line)] bg-[var(--bg-muted)] py-16 lg:py-20 ${pad}`}
       >
         <SectionHead
-          eyebrow="Workflow"
-          title="How Eluru teams run CivicPulse"
-          lead="From loading the voter list to election day, in four clear steps."
+          eyebrow="How it works"
+          title="From booth PDF to polling day"
+          lead="Four steps from loading the voter list to election day."
         />
         <div className="relative mt-10 grid w-full gap-4 md:grid-cols-2 xl:grid-cols-4">
           <div className="absolute left-0 right-0 top-[38px] hidden h-px bg-gradient-to-r from-transparent via-[var(--brand)]/40 to-transparent xl:block" />
@@ -887,9 +887,9 @@ export default function LandingPage() {
       {/* Modules */}
       <section id="modules" className={`w-full scroll-mt-16 py-16 lg:py-20 ${pad}`}>
         <SectionHead
-          eyebrow="14 modules"
-          title="Everything the ground team needs"
-          lead="Grouped the same way as the app’s sidebar. Pick a group to see what each screen does."
+          eyebrow="Screens"
+          title="What you can open in CivicPulse"
+          lead="Same groups as the app sidebar. Pick a group to see each screen."
         />
         <ModuleTabs />
       </section>
@@ -899,9 +899,9 @@ export default function LandingPage() {
         className={`w-full border-y border-[var(--line)] bg-[var(--bg-muted)] py-16 lg:py-20 ${pad}`}
       >
         <SectionHead
-          eyebrow="Inside a voter record"
-          title="More than a name on a list"
-          lead="Every voter from the roll can be updated by the field team: status after a visit, how they lean, and every contact made."
+          eyebrow="Voter record"
+          title="Status, lean and contacts"
+          lead="Field teams can update each voter: visit status, support lean, and every contact made."
         />
         <div className="mt-10 grid gap-4 lg:grid-cols-3">
           <Reveal className="rounded-2xl border border-[var(--line)] bg-[var(--bg-elevated)] p-5">
@@ -955,8 +955,8 @@ export default function LandingPage() {
       <section id="roles" className={`w-full scroll-mt-16 py-16 lg:py-20 ${pad}`}>
         <SectionHead
           eyebrow="Who uses it"
-          title="Six roles, each with its own view"
-          lead="Signing in with a role sets the sidebar. Below is the exact access each role has in the app today."
+          title="Menu changes by role"
+          lead="Your role sets the sidebar. Below is the access each role has today."
         />
         <div className="mt-10 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           {AUDIENCES.map((item, i) => (
@@ -986,8 +986,8 @@ export default function LandingPage() {
             <SectionHead
               dark
               eyebrow="Mahilu Solutions"
-              title="Ready for the Eluru workspace?"
-              lead="Pick your role and start from the operations dashboard."
+              title="Need access for Eluru?"
+              lead="Sign in with your approved account, or ask the campaign office for access."
             />
             <Reveal delay={150} className="mt-6 flex flex-wrap gap-2">
               {HIGHLIGHTS.map((tech) => (
@@ -1005,11 +1005,11 @@ export default function LandingPage() {
               href="#login"
               className="group inline-flex items-center gap-2 rounded-xl bg-eluru-gold px-5 py-3.5 text-sm font-bold text-[#0F1B2D] shadow-glow transition hover:-translate-y-0.5 hover:bg-[#ffc94a]"
             >
-              Sign in now
+              Sign in
               <ArrowRight className="h-4 w-4 transition group-hover:translate-x-1" />
             </a>
             <Link to="/request-access" className="ml-3 inline-flex items-center rounded-xl px-3 py-3.5 text-sm font-semibold text-[var(--brand)] hover:underline">
-              Don’t have an account? Request access
+              Request access
             </Link>
           </Reveal>
         </div>

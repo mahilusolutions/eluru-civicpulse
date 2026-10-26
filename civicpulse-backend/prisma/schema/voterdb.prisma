@@ -69,7 +69,8 @@ model Elector {
   boxIndex       Int?          @map("box_index")
   status         VoterStatus   @default(active)
   supportLean    SupportLean?  @default(unknown) @map("support_lean")
-  phone          String?
+  /// One or more mobile numbers for this voter (EPIC match from list imports).
+  phone          String[]      @default([])
   rawOcrText     String?       @map("raw_ocr_text")
   rawJson        Json?         @map("raw_json")
   createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)

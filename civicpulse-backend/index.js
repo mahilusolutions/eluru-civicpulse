@@ -337,7 +337,7 @@ app.get(
                COUNT(*) FILTER (WHERE epic IS NOT NULL AND epic <> '')::int AS with_epic,
                COUNT(age)::int AS with_age,
                COUNT(*) FILTER (WHERE house_no IS NOT NULL AND house_no <> '')::int AS with_house,
-               COUNT(phone)::int AS with_phone,
+               COUNT(*) FILTER (WHERE phone IS NOT NULL AND cardinality(phone) > 0)::int AS with_phone,
                COUNT(DISTINCT house_no) FILTER (WHERE house_no IS NOT NULL AND house_no <> '')::int AS households,
                COUNT(DISTINCT section_no)::int AS roads,
                COUNT(DISTINCT page_no)::int AS pages_with_voters,
@@ -501,8 +501,8 @@ function voterWhere(query = {}, omit = null) {
     const serial = /^\d{1,7}$/.test(q) ? Number(q) : null;
     c.push(
       serial != null
-        ? Prisma.sql`(name ILIKE ${like} OR epic ILIKE ${like} OR house_no ILIKE ${like} OR relation_name ILIKE ${like} OR section_name ILIKE ${like} OR phone ILIKE ${like} OR serial_no = ${serial})`
-        : Prisma.sql`(name ILIKE ${like} OR epic ILIKE ${like} OR house_no ILIKE ${like} OR relation_name ILIKE ${like} OR section_name ILIKE ${like} OR phone ILIKE ${like})`
+        ? Prisma.sql`(name ILIKE ${like} OR epic ILIKE ${like} OR house_no ILIKE ${like} OR relation_name ILIKE ${like} OR section_name ILIKE ${like} OR array_to_string(phone, ' ') ILIKE ${like} OR serial_no = ${serial})`
+        : Prisma.sql`(name ILIKE ${like} OR epic ILIKE ${like} OR house_no ILIKE ${like} OR relation_name ILIKE ${like} OR section_name ILIKE ${like} OR array_to_string(phone, ' ') ILIKE ${like})`
     );
   }
   return Prisma.sql`WHERE ${Prisma.join(c, ' AND ')}`;
@@ -655,7 +655,7 @@ app.get(
           r.section_name,
           r.status,
           r.support_lean,
-          r.phone,
+          Array.isArray(r.phone) ? r.phone.join('; ') : r.phone,
         ]
           .map(cell)
           .join(',')
@@ -930,11 +930,23 @@ app.patch(
       data.supportLean = b.support_lean;
     }
     if (b.phone !== undefined) {
-      const phone = String(b.phone || '').replace(/[^\d+]/g, '');
-      if (phone && (phone.length < 7 || phone.length > 15)) {
-        return fail(res, 400, 'Enter a valid phone number');
+      const raw = Array.isArray(b.phone)
+        ? b.phone
+        : String(b.phone || '')
+            .split(/[,;/|\s]+/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+      const phones = [];
+      for (const item of raw) {
+        let d = String(item).replace(/\D/g, '');
+        if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
+        if (d.length === 11 && d.startsWith('0')) d = d.slice(1);
+        if (d.length < 7 || d.length > 15) {
+          return fail(res, 400, 'Enter a valid phone number');
+        }
+        if (!phones.includes(d)) phones.push(d);
       }
-      data.phone = phone || null;
+      data.phone = phones.length ? phones : [];
     }
     if (b.name !== undefined) {
       const name = String(b.name || '').trim().slice(0, 200);

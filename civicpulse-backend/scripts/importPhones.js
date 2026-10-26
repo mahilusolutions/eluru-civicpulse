@@ -1,15 +1,16 @@
 /**
- * Add phone numbers to voters by matching the Voter ID (EPIC), e.g. WIO2501872.
+ * Import phone numbers onto voters by Voter ID (EPIC).
+ * Stores one or more numbers per voter in voterdb.electors.phone (PostgreSQL text[]).
  *
- *   node scripts/importPhones.js phones.csv              # dry run: shows what would change, writes nothing
- *   node scripts/importPhones.js phones.csv --apply      # save the phone numbers
- *   node scripts/importPhones.js phones.csv --apply --overwrite   # also replace numbers already saved
+ *   node scripts/importPhones.js path/to/file.xlsx              # dry run
+ *   node scripts/importPhones.js path/to/file.xlsx --apply      # write
+ *   node scripts/importPhones.js path/to/file.xlsx --apply --overwrite
  *
- * The file needs one column with the Voter ID and one with the phone number (any header names like
- * "Voter ID", "EPIC", "Phone", "Mobile"). Comma, semicolon or tab separated. From Excel use Save As -> CSV.
- * Every voter row that has the same Voter ID gets the number (the same person can appear in more than one roll).
- * A voter ID that appears with two different numbers is NOT guessed: it is skipped and both numbers are listed in the report.
- * A report of numbers that could not be used is written next to the file as <name>.report.csv.
+ * --overwrite  replace existing phones with the file's list
+ * (default)    merge: keep existing numbers and add any new ones from the file
+ *
+ * Accepts .xlsx / .xls / .csv. Needs a Voter ID column and a Mobile/Phone column.
+ * Several rows with the same EPIC and different numbers → all numbers are kept.
  */
 const fs = require('fs');
 const path = require('path');
@@ -21,13 +22,26 @@ const file = args.find((a) => !a.startsWith('--'));
 const APPLY = args.includes('--apply');
 const OVERWRITE = args.includes('--overwrite');
 if (!file) {
-  console.error('Usage: node scripts/importPhones.js <file.csv> [--apply] [--overwrite]');
+  console.error('Usage: node scripts/importPhones.js <file.xlsx|csv> [--apply] [--overwrite]');
   process.exit(1);
 }
 
-/** Small CSV reader: quotes, BOM, and comma / semicolon / tab separators. */
+const normEpic = (v) => String(v || '').toUpperCase().replace(/[^A-Z0-9/]/g, '');
+
+/** Indian mobile: strips +91 / 91 / leading 0, keeps 10 digits starting 6-9. */
+function normPhone(v) {
+  if (v == null || v === '') return null;
+  let d = String(v).trim();
+  if (/e\+/i.test(d)) d = Number(v).toFixed(0);
+  d = d.replace(/\D/g, '');
+  if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
+  if (d.length === 11 && d.startsWith('0')) d = d.slice(1);
+  if (d.length === 10 && /^[6-9]/.test(d)) return d;
+  return null;
+}
+
 function parseCsv(text) {
-  const clean = text.replace(/^﻿/, '');
+  const clean = text.replace(/^\uFEFF/, '');
   const firstLine = clean.split(/\r?\n/, 1)[0] || '';
   const delim = [',', ';', '\t'].map((d) => [d, firstLine.split(d).length]).sort((a, b) => b[1] - a[1])[0][0];
   const rows = [];
@@ -50,124 +64,235 @@ function parseCsv(text) {
       if (ch === '\r' && clean[i + 1] === '\n') i += 1;
       row.push(cell);
       cell = '';
-      if (row.some((c) => c.trim() !== '')) rows.push(row);
+      if (row.some((c) => String(c).trim() !== '')) rows.push(row);
       row = [];
     } else cell += ch;
   }
   row.push(cell);
-  if (row.some((c) => c.trim() !== '')) rows.push(row);
+  if (row.some((c) => String(c).trim() !== '')) rows.push(row);
   return rows;
 }
 
-const normEpic = (v) => String(v || '').toUpperCase().replace(/[^A-Z0-9/]/g, '');
+function loadRows(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.xlsx' || ext === '.xls') {
+    let XLSX;
+    try {
+      XLSX = require('xlsx');
+    } catch {
+      throw new Error('Install xlsx first: npm install xlsx (in civicpulse-backend)');
+    }
+    const wb = XLSX.readFile(filePath);
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    const json = XLSX.utils.sheet_to_json(sheet, { defval: null, raw: true });
+    if (!json.length) throw new Error('The spreadsheet has no data rows.');
+    const headers = Object.keys(json[0]);
+    return {
+      headers,
+      rows: json.map((r) => headers.map((h) => r[h])),
+    };
+  }
+  const table = parseCsv(fs.readFileSync(filePath, 'utf8'));
+  if (table.length < 2) throw new Error('The file has no data rows.');
+  return { headers: table[0], rows: table.slice(1) };
+}
 
-/** Indian mobile: strips +91 / 91 / leading 0, keeps 10 digits starting 6-9. Other lengths are kept only if 7-15 digits. */
-function normPhone(v) {
-  let d = String(v || '').replace(/\D/g, '');
-  if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
-  if (d.length === 11 && d.startsWith('0')) d = d.slice(1);
-  if (d.length === 10 && /^[6-9]/.test(d)) return d;
-  return null;
+function pickCol(headers, names) {
+  const norm = headers.map((h) => String(h || '').toLowerCase().replace(/[^a-z0-9]/g, ''));
+  return norm.findIndex((h) => names.includes(h));
+}
+
+function samePhones(a, b) {
+  const left = [...(a || [])].sort().join(',');
+  const right = [...(b || [])].sort().join(',');
+  return left === right;
+}
+
+function mergePhones(existing, incoming) {
+  const out = [];
+  for (const p of [...(existing || []), ...incoming]) {
+    if (p && !out.includes(p)) out.push(p);
+  }
+  return out;
 }
 
 (async () => {
-  const rows = parseCsv(fs.readFileSync(file, 'utf8'));
-  if (rows.length < 2) throw new Error('The file has no data rows.');
-  const header = rows[0].map((h) => h.toLowerCase().replace(/[^a-z0-9]/g, ''));
-  const col = (names) => header.findIndex((h) => names.includes(h));
-  const iEpic = col(['voterid', 'epic', 'epicno', 'epicnumber', 'voteridno', 'voteridnumber', 'id']);
-  const iPhone = col(['phone', 'phonenumber', 'mobile', 'mobilenumber', 'mobileno', 'phoneno', 'contact', 'contactnumber', 'cell']);
+  const abs = path.resolve(file);
+  if (!fs.existsSync(abs)) throw new Error(`File not found: ${abs}`);
+
+  const colType = await prisma.$queryRaw`
+    SELECT udt_name FROM information_schema.columns
+    WHERE table_schema = 'voterdb' AND table_name = 'electors' AND column_name = 'phone'`;
+  const phoneIsArray = colType[0]?.udt_name === '_text';
+  console.log(`DB phone column type: ${phoneIsArray ? 'text[] (array)' : colType[0]?.udt_name || 'missing'}`);
+
+  const { headers, rows } = loadRows(abs);
+  const iEpic = pickCol(headers, ['voterid', 'epic', 'epicno', 'epicnumber', 'voteridno', 'voteridnumber', 'id']);
+  const iPhone = pickCol(headers, [
+    'phone',
+    'phonenumber',
+    'mobile',
+    'mobilenumber',
+    'mobileno',
+    'phoneno',
+    'contact',
+    'contactnumber',
+    'cell',
+  ]);
   if (iEpic < 0 || iPhone < 0) {
-    throw new Error(`Could not find the columns. Headers seen: ${rows[0].join(' | ')}. Need a Voter ID column and a Phone column.`);
+    throw new Error(`Could not find columns. Headers: ${headers.join(' | ')}. Need Voter ID + Mobile/Phone.`);
   }
 
+  const byEpic = new Map(); // epic -> Set of phones
   const report = [['row', 'voter_id', 'phone', 'problem']];
-  const byEpic = new Map();
-  const numbersFor = new Map(); // epic -> every different number the file gives for it
   let invalid = 0;
-  let conflicting = 0;
-  rows.slice(1).forEach((r, idx) => {
+  let blankPhone = 0;
+
+  rows.forEach((r, idx) => {
     const line = idx + 2;
     const epic = normEpic(r[iEpic]);
     const rawPhone = r[iPhone];
-    if (!epic) return report.push([line, r[iEpic], rawPhone, 'missing voter id']);
+    if (!epic) {
+      report.push([line, r[iEpic], rawPhone, 'missing voter id']);
+      return;
+    }
+    if (rawPhone == null || String(rawPhone).trim() === '') {
+      blankPhone += 1;
+      return;
+    }
     const phone = normPhone(rawPhone);
     if (!phone) {
       invalid += 1;
-      return report.push([line, epic, rawPhone, 'not a valid 10-digit mobile number']);
+      report.push([line, epic, rawPhone, 'not a valid 10-digit mobile number']);
+      return;
     }
-    if (!numbersFor.has(epic)) numbersFor.set(epic, new Set());
-    numbersFor.get(epic).add(phone);
-    return byEpic.set(epic, phone);
+    if (!byEpic.has(epic)) byEpic.set(epic, new Set());
+    byEpic.get(epic).add(phone);
   });
-  // A voter ID with more than one number is ambiguous: leave it out and list the numbers for a person to decide.
-  for (const [epic, set] of numbersFor) {
-    if (set.size > 1) {
-      conflicting += 1;
-      byEpic.delete(epic);
-      report.push(['', epic, [...set].join(' / '), 'several different numbers for this voter id - not saved, choose one']);
-    }
-  }
 
-  // Which of these voter ids exist, and which already have a number?
   const epics = [...byEpic.keys()];
-  const found = new Map(); // epic -> { rows, withPhone, current }
+  const found = new Map(); // epic -> { n, current: string[] }
   for (let i = 0; i < epics.length; i += 5000) {
     const chunk = epics.slice(i, i + 5000);
-    const res = await prisma.$queryRaw`
-      SELECT epic, COUNT(*)::int AS n, MAX(phone) AS current
-      FROM voterdb.electors WHERE epic = ANY(${chunk}::text[]) GROUP BY epic`;
-    res.forEach((x) => found.set(x.epic, x));
+    // Works before and after text → text[] migrate
+    const res = phoneIsArray
+      ? await prisma.$queryRaw`
+          SELECT epic, COUNT(*)::int AS n,
+                 COALESCE(
+                   (array_agg(phone) FILTER (WHERE cardinality(phone) > 0))[1],
+                   '{}'::text[]
+                 ) AS current
+          FROM voterdb.electors WHERE epic = ANY(${chunk}::text[])
+          GROUP BY epic`
+      : await prisma.$queryRaw`
+          SELECT epic, COUNT(*)::int AS n, MAX(phone) AS current
+          FROM voterdb.electors WHERE epic = ANY(${chunk}::text[])
+          GROUP BY epic`;
+    res.forEach((x) => {
+      let current = [];
+      if (Array.isArray(x.current)) current = x.current.filter(Boolean);
+      else if (x.current) current = [String(x.current)];
+      found.set(x.epic, { n: x.n, current });
+    });
   }
-  const todo = [];
+
+  const todo = []; // { epic, phones, n, previous }
   let notFound = 0;
-  let alreadyHas = 0;
   let same = 0;
-  for (const [epic, phone] of byEpic) {
+  let multi = 0;
+
+  for (const [epic, set] of byEpic) {
+    const phones = [...set];
+    if (phones.length > 1) multi += 1;
     const f = found.get(epic);
     if (!f) {
       notFound += 1;
-      report.push(['', epic, phone, 'voter id not found in the voter list']);
-    } else if (f.current && f.current === phone) same += 1;
-    else if (f.current && !OVERWRITE) {
-      alreadyHas += 1;
-      report.push(['', epic, phone, `voter already has ${f.current} (use --overwrite to replace)`]);
-    } else todo.push([epic, phone, f.n, f.current || null]);
+      report.push(['', epic, phones.join('; '), 'voter id not found in the voter list']);
+      continue;
+    }
+    const next = OVERWRITE ? phones : mergePhones(f.current, phones);
+    if (samePhones(f.current, next)) {
+      same += 1;
+      continue;
+    }
+    todo.push({ epic, phones: next, n: f.n, previous: f.current });
   }
 
-  const voterRows = todo.reduce((a, t) => a + t[2], 0);
-  console.log(`File rows: ${rows.length - 1}`);
-  console.log(`Usable voter id + phone pairs: ${byEpic.size}`);
-  console.log(`Will set: ${todo.length} voter ids (${voterRows} voter rows)`);
-  console.log(`Skipped - invalid phone: ${invalid}, conflicting duplicates: ${conflicting}, not in voter list: ${notFound}, already have a number: ${alreadyHas}, already the same: ${same}`);
+  const voterRows = todo.reduce((a, t) => a + t.n, 0);
+  const phoneSlots = [...byEpic.values()].reduce((a, s) => a + s.size, 0);
+
+  console.log(`File: ${path.basename(abs)}`);
+  console.log(`File data rows: ${rows.length}`);
+  console.log(`Unique voter ids with ≥1 phone in file: ${byEpic.size}`);
+  console.log(`Phone numbers in file (after normalize): ${phoneSlots}`);
+  console.log(`Voter ids with 2+ different phones: ${multi}`);
+  console.log(`Will update: ${todo.length} voter ids (${voterRows} elector rows)`);
+  console.log(
+    `Skipped — blank phone: ${blankPhone}, invalid: ${invalid}, not in DB: ${notFound}, already same: ${same}`
+  );
+  console.log(`Mode: ${OVERWRITE ? 'overwrite' : 'merge'} · ${APPLY ? 'APPLY' : 'DRY RUN'}`);
 
   if (report.length > 1) {
-    const out = file.replace(/\.[^.]+$/, '') + '.report.csv';
-    fs.writeFileSync(out, '﻿' + report.map((r) => r.map((c) => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n'));
+    const out = abs.replace(/\.[^.]+$/, '') + '.report.csv';
+    fs.writeFileSync(
+      out,
+      '\uFEFF' + report.map((r) => r.map((c) => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n')
+    );
     console.log(`Problem report: ${out}`);
   }
 
   if (!APPLY) {
-    console.log('DRY RUN - nothing saved. Add --apply to save.');
+    console.log('DRY RUN — nothing saved. Add --apply to save (also migrates phone → text[] if needed).');
     return;
   }
 
-  for (let i = 0; i < todo.length; i += 2000) {
-    const chunk = todo.slice(i, i + 2000);
-    await prisma.$executeRaw`
-      UPDATE voterdb.electors e SET phone = v.phone, updated_at = now()
-      FROM unnest(${chunk.map((t) => t[0])}::text[], ${chunk.map((t) => t[1])}::text[]) AS v(epic, phone)
-      WHERE e.epic = v.epic`;
+  if (!phoneIsArray) {
+    console.log('Migrating voterdb.electors.phone text → text[] …');
+    await prisma.$executeRawUnsafe('DROP INDEX IF EXISTS voterdb.idx_electors_phone_trgm');
+    await prisma.$executeRawUnsafe(`
+      ALTER TABLE voterdb.electors
+        ALTER COLUMN phone TYPE text[]
+        USING CASE
+          WHEN phone IS NULL OR btrim(phone) = '' THEN '{}'::text[]
+          ELSE ARRAY[btrim(phone)]
+        END`);
+    await prisma.$executeRawUnsafe(`ALTER TABLE voterdb.electors ALTER COLUMN phone SET DEFAULT '{}'::text[]`);
+    await prisma.$executeRawUnsafe(`ALTER TABLE voterdb.electors ALTER COLUMN phone SET NOT NULL`);
+    await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS idx_electors_phone_gin ON voterdb.electors USING gin (phone)');
+    console.log('Column migrated.');
   }
+
+  for (let i = 0; i < todo.length; i += 1500) {
+    const chunk = todo.slice(i, i + 1500);
+    const payload = JSON.stringify(chunk.map((t) => ({ epic: t.epic, phones: t.phones })));
+    await prisma.$executeRaw`
+      UPDATE voterdb.electors e
+      SET phone = (
+            SELECT COALESCE(array_agg(p ORDER BY ord), '{}'::text[])
+            FROM jsonb_array_elements_text(x.phones) WITH ORDINALITY AS t(p, ord)
+          ),
+          updated_at = now()
+      FROM jsonb_to_recordset(${payload}::jsonb) AS x(epic text, phones jsonb)
+      WHERE e.epic = x.epic`;
+    process.stdout.write(`  saved ${Math.min(i + chunk.length, todo.length)} / ${todo.length}\r`);
+  }
+  console.log('');
+
   await logAudit(prisma, {
     entity: 'voter',
     entityId: null,
     action: 'update',
     actorRole: 'system',
-    summary: `Phone import from ${path.basename(file)}: ${todo.length} voter ids (${voterRows} rows) updated`,
-    after: { file: path.basename(file), voter_ids: todo.length, rows: voterRows, overwrite: OVERWRITE },
+    summary: `Phone import from ${path.basename(abs)}: ${todo.length} voter ids (${voterRows} rows), array mode`,
+    after: {
+      file: path.basename(abs),
+      voter_ids: todo.length,
+      rows: voterRows,
+      overwrite: OVERWRITE,
+      multi_phone_ids: multi,
+    },
   });
-  console.log(`SAVED: ${todo.length} voter ids (${voterRows} voter rows).`);
+  console.log(`SAVED: ${todo.length} voter ids (${voterRows} elector rows).`);
 })()
   .catch((e) => {
     console.error('Error:', e.message);

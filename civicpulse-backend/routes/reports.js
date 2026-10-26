@@ -22,7 +22,22 @@ module.exports = function registerReports({ app, prisma, ok, fail, asyncHandler,
         head: ['Booth', 'Voter no.', 'Voter ID', 'Name', 'Relation', 'Relative name', 'House number', 'Address note', 'Age', 'Gender', 'Road', 'Status', 'Support', 'Phone'],
         rows: rows.map((r) => {
           const h = houseFields(r.house_no);
-          return [r.part_no, r.serial_no, r.epic, r.name, r.relation_type, r.relation_name, h.house_number, h.address_note, r.age, r.gender, r.section_name, r.status, r.support_lean, r.phone];
+          return [
+            r.part_no,
+            r.serial_no,
+            r.epic,
+            r.name,
+            r.relation_type,
+            r.relation_name,
+            h.house_number,
+            h.address_note,
+            r.age,
+            r.gender,
+            r.section_name,
+            r.status,
+            r.support_lean,
+            Array.isArray(r.phone) ? r.phone.join('; ') : r.phone,
+          ];
         }),
       };
     },
