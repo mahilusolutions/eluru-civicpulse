@@ -436,6 +436,8 @@ function setupUpload() {
       setUploadProgress(0, 0, state.selectedFiles.reduce((s, f) => s + f.size, 0));
       const fd = new FormData();
       state.selectedFiles.forEach((f) => fd.append('files', f));
+      const langEl = $('ocrLang');
+      fd.append('lang', langEl?.value || 'auto');
       const data = await uploadWithProgress(fd);
       msg.textContent = `Queued ${data.jobs.length} PDF(s) — saved with original names`;
       hideUploadProgress();

@@ -39,6 +39,7 @@ function createQueue({ uploadedDir, extractedDir }) {
       id: job.id,
       filename: job.filename,
       part_no: job.part_no,
+      lang: job.lang || 'auto',
       status: job.status,
       created_at: job.created_at,
       started_at: job.started_at,
@@ -56,14 +57,16 @@ function createQueue({ uploadedDir, extractedDir }) {
     };
   }
 
-  function enqueue(filename, absPath) {
+  function enqueue(filename, absPath, opts = {}) {
     const id = uuidv4();
     const part_no = partFromFilename(filename);
+    const lang = String(opts.lang || process.env.OCR_LANG || 'auto').trim().toLowerCase() || 'auto';
     const job = {
       id,
       filename,
       absPath,
       part_no,
+      lang,
       status: 'pending',
       created_at: new Date().toISOString(),
       started_at: null,
@@ -113,6 +116,7 @@ function createQueue({ uploadedDir, extractedDir }) {
             pageWorkers: PAGE_WORKERS,
             startPage: 1,
             imageDir,
+            lang: job.lang || 'auto',
             onProgress: (p) => {
               job.stage = p.stage;
               job.page = p.page || 0;

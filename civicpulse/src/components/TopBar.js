@@ -38,8 +38,10 @@ export default function TopBar() {
   const text = query.trim();
 
   // Suggestions: look up matching voters shortly after the last key.
+  // Latin needs 2 chars; a single Telugu akshara is already a useful query.
   useEffect(() => {
-    if (text.length < 2) {
+    const hasIndic = /[\u0C00-\u0C7F]/.test(text);
+    if (text.length < (hasIndic ? 1 : 2)) {
       setHits([]);
       setSearching(false);
       return undefined;
@@ -139,12 +141,12 @@ export default function TopBar() {
             onKeyDown={handleKey}
             aria-label="Search voters"
             autoComplete="off"
-            placeholder="Search voters by name, ID or house…"
+            placeholder="Search name (తెలుగు / English), ID or house…"
             className="w-full rounded-xl border border-[var(--line)] bg-[var(--bg)] py-2 pl-9 pr-3 text-sm text-[var(--ink)] outline-none placeholder:text-[var(--muted)] focus:border-[var(--brand)]"
           />
         </form>
 
-        {open && text.length >= 2 ? (
+        {open && text.length >= (/[\u0C00-\u0C7F]/.test(text) ? 1 : 2) ? (
           <div className="absolute left-0 right-0 top-full z-30 mt-1.5 overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--bg-elevated)] shadow-[0_12px_40px_-12px_rgba(15,27,45,0.35)]">
             {searching && !hits.length ? <p className="px-3 py-3 text-sm text-[var(--muted)]">Searching…</p> : null}
             {!searching && !hits.length ? <p className="px-3 py-3 text-sm text-[var(--muted)]">No voters match “{text}”.</p> : null}

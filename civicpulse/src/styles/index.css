@@ -69,7 +69,8 @@
 
   body {
     margin: 0;
-    font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+    /* Noto Sans Telugu so voter names / search results in తెలుగు render (Jakarta has no Telugu glyphs) */
+    font-family: 'Plus Jakarta Sans', 'Noto Sans Telugu', 'Nirmala UI', system-ui, sans-serif;
     color: var(--ink);
     background: var(--bg);
     -webkit-font-smoothing: antialiased;

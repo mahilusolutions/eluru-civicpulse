@@ -44,4 +44,5 @@ Open `http://SERVER_IP:2000`
 - Upload → immediate queue (does not wait for OCR)
 - PDF queue: serial (`pdfWorkers = 1`)
 - Page OCR: parallel (`OCR_PAGE_WORKERS`, default 3), **all pages from page 1**
+- Language: **Auto = Telugu + English** for any filename (override with upload `lang`, or `OCR_LANG=eng|tel|auto`)
 - Per PDF: `<original-name>.json` (pages[].text + full_text + optional voters) and `<original-name>.txt`

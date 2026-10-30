@@ -37,34 +37,102 @@ const PDFTOPPM =
     return 'pdftoppm';
   })();
 
-// ---- Language (English rolls, or Telugu rolls whose card text is Telugu) ----
+// ---- Language (any uploaded roll: Eng, Tel, or both) ----
 const TESSDATA_DIR = process.env.TESSDATA_DIR || path.join(__dirname, '..', 'tessdata');
 let telChoice; // cached: null (not installed) or the extra tesseract args to use
+let engChoice; // cached eng-only args (bundled tessdata when needed)
 
-/** Telugu rolls are named ...-TEL-<part>.pdf; English ones ...-ENG-<part>-WI.pdf. */
+/**
+ * Pick OCR language for a PDF.
+ * - Explicit opt / OCR_LANG wins
+ * - Filename ...-TEL-N... → tel; ...-ENG-N... → eng
+ * - Otherwise "auto" (tel+eng) so any upload works without a special name
+ */
 function langForFile(file) {
-  return /[-_]TEL[-_]\d+/i.test(path.basename(String(file || ''))) ? 'tel' : 'eng';
+  const fromEnv = String(process.env.OCR_LANG || '').trim().toLowerCase();
+  if (fromEnv) return fromEnv;
+  const base = path.basename(String(file || ''));
+  if (/[-_]TEL[-_]\d+/i.test(base)) return 'tel';
+  if (/[-_]ENG[-_]\d+/i.test(base)) return 'eng';
+  return 'auto';
 }
 
-/** tesseract args for a language: Telugu needs its language pack (system-wide, or the bundled tessdata folder). */
-function tessLangArgs(lang) {
-  if (lang !== 'tel') return ['-l', 'eng'];
-  if (telChoice === undefined) {
-    const { spawnSync } = require('child_process');
-    const has = (args) => {
-      const r = spawnSync(TESSERACT, [...args, '--list-langs'], { encoding: 'utf8', windowsHide: true });
-      const langs = String(r.stdout || '').split(/\r?\n/).map((l) => l.trim());
-      return langs.includes('tel') && langs.includes('eng');
-    };
-    if (fs.existsSync(path.join(TESSDATA_DIR, 'tel.traineddata')) && has(['--tessdata-dir', TESSDATA_DIR])) {
-      telChoice = ['--tessdata-dir', TESSDATA_DIR, '-l', 'tel+eng']; // bundled model (tessdata_best)
-    } else if (has([])) telChoice = ['-l', 'tel+eng'];
-    else telChoice = null;
+function listTessLangs(extraArgs = []) {
+  const { spawnSync } = require('child_process');
+  const r = spawnSync(TESSERACT, [...extraArgs, '--list-langs'], {
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  return String(r.stdout || '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+}
+
+function engLangArgs() {
+  if (engChoice !== undefined) return engChoice;
+  const bundledEng = fs.existsSync(path.join(TESSDATA_DIR, 'eng.traineddata'));
+  if (bundledEng && listTessLangs(['--tessdata-dir', TESSDATA_DIR]).includes('eng')) {
+    engChoice = ['--tessdata-dir', TESSDATA_DIR, '-l', 'eng'];
+  } else {
+    engChoice = ['-l', 'eng'];
+  }
+  return engChoice;
+}
+
+function telEngLangArgs() {
+  if (telChoice !== undefined) {
+    if (!telChoice) {
+      throw new Error(
+        'Telugu language pack is not installed. Install it (Linux: apt install tesseract-ocr-tel) or put tel.traineddata and eng.traineddata in ' +
+          TESSDATA_DIR
+      );
+    }
+    return telChoice;
+  }
+  const has = (args) => {
+    const langs = listTessLangs(args);
+    return langs.includes('tel') && langs.includes('eng');
+  };
+  if (fs.existsSync(path.join(TESSDATA_DIR, 'tel.traineddata')) && has(['--tessdata-dir', TESSDATA_DIR])) {
+    telChoice = ['--tessdata-dir', TESSDATA_DIR, '-l', 'tel+eng'];
+  } else if (has([])) {
+    telChoice = ['-l', 'tel+eng'];
+  } else {
+    telChoice = null;
   }
   if (!telChoice) {
-    throw new Error('Telugu language pack is not installed. Install it (Linux: apt install tesseract-ocr-tel) or put tel.traineddata and eng.traineddata in ' + TESSDATA_DIR);
+    throw new Error(
+      'Telugu language pack is not installed. Install it (Linux: apt install tesseract-ocr-tel) or put tel.traineddata and eng.traineddata in ' +
+        TESSDATA_DIR
+    );
   }
   return telChoice;
+}
+
+/**
+ * tesseract -l args.
+ * eng → English only; tel / auto / tel+eng → Telugu+English (any Eluru roll upload).
+ * Other values (e.g. hin, eng+hin) are passed through when the packs exist.
+ */
+function tessLangArgs(lang) {
+  const raw = String(lang || 'auto').trim().toLowerCase() || 'auto';
+  if (raw === 'eng' || raw === 'english') return engLangArgs();
+  if (raw === 'tel' || raw === 'telugu' || raw === 'auto' || raw === 'tel+eng' || raw === 'eng+tel') {
+    return telEngLangArgs();
+  }
+  // Custom pack list from upload UI / OCR_LANG (e.g. "hin", "eng+hin")
+  const packs = raw.split('+').map((p) => p.trim()).filter(Boolean);
+  if (!packs.length) return telEngLangArgs();
+  const bundled = packs.every((p) => fs.existsSync(path.join(TESSDATA_DIR, `${p}.traineddata`)));
+  if (bundled && packs.every((p) => listTessLangs(['--tessdata-dir', TESSDATA_DIR]).includes(p))) {
+    return ['--tessdata-dir', TESSDATA_DIR, '-l', packs.join('+')];
+  }
+  const system = listTessLangs([]);
+  if (packs.every((p) => system.includes(p))) return ['-l', packs.join('+')];
+  // Fall back to tel+eng rather than failing the whole PDF
+  console.warn(`OCR lang "${raw}" not installed — using tel+eng`);
+  return telEngLangArgs();
 }
 
 function isJunkElectorName(n) {
@@ -617,8 +685,10 @@ async function ocrPdfToVoters(pdfPath, partNo, opts = {}) {
   } = opts;
 
   const keepImages = process.env.OCR_KEEP_IMAGES !== '0' && Boolean(imageDir);
-  const lang = opts.lang || langForFile(pdfPath);
+  const lang = String(opts.lang || langForFile(pdfPath)).toLowerCase();
   const langArgs = tessLangArgs(lang);
+  // Card-reader heuristics: treat auto/tel as able to see Telugu pages
+  const allowTeluguCards = !['eng', 'english'].includes(lang);
 
   if (!fs.existsSync(pdfPath)) throw new Error(`PDF not found: ${pdfPath}`);
 
@@ -731,9 +801,17 @@ async function ocrPdfToVoters(pdfPath, partNo, opts = {}) {
       const etaSeconds = Math.round((elapsed / finished) * (pageNos.length - finished));
       // Voter pages: read every card on its own (serial + Voter ID + details together).
       let cards = null;
-      const isVoterPage = lang === 'tel' ? /ఓటరు\s*పేరు|విభాగం\s*సంఖ్య/u.test(pageText) || (pageText.match(/[A-Z]{3}\d{7}/g) || []).length >= 3 : /Section\s*No\s*and\s*Name/i.test(pageText);
+      const looksTelugu =
+        /ఓటరు\s*పేరు|విభాగం\s*సంఖ్య/u.test(pageText) ||
+        (pageText.match(/[\u0C00-\u0C7F]/g) || []).length > 40;
+      const looksEnglish = /Section\s*No\s*and\s*Name/i.test(pageText);
+      const hasEpics = (pageText.match(/[A-Z]{3}\d{7}/g) || []).length >= 3;
+      const isVoterPage = allowTeluguCards
+        ? looksTelugu || looksEnglish || hasEpics
+        : looksEnglish || hasEpics;
       if (process.env.OCR_CARD_READER !== '0' && isVoterPage) {
         try {
+          const teluguPage = allowTeluguCards && (looksTelugu || !looksEnglish);
           cards = await readCardHeaders({
             pdfPath,
             pageNo,
@@ -742,8 +820,8 @@ async function ocrPdfToVoters(pdfPath, partNo, opts = {}) {
             tmpDir: tmpRoot,
             bodies: true,
             bodyLangArgs: langArgs,
-            readAloneOnly: lang === 'tel',
-            ...(lang === 'tel' ? { bodyBox: { x0: 6, x1: 330, y0: 26, y1: 176 } } : {}),
+            readAloneOnly: teluguPage,
+            ...(teluguPage ? { bodyBox: { x0: 6, x1: 330, y0: 26, y1: 176 } } : {}),
           });
         } catch (err) {
           console.warn(`Card reader failed on page ${pageNo}: ${err.message} (using page text)`);

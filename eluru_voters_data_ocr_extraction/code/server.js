@@ -213,13 +213,17 @@ app.post('/api/upload', (req, res) => {
     if (!files.length) {
       return res.status(400).json({ success: false, message: 'No PDF files uploaded' });
     }
+    // auto = Telugu+English (works for any Eluru roll name); eng / tel force one script
+    const lang = String(req.body?.lang || process.env.OCR_LANG || 'auto')
+      .trim()
+      .toLowerCase() || 'auto';
     const jobs = files.map((f) => {
       const savedName = f.filename || safeOriginalName(f.originalname);
-      return queue.enqueue(savedName, f.path);
+      return queue.enqueue(savedName, f.path, { lang });
     });
     broadcast('queue_stats', queue.stats());
     broadcast('disk_status', { files: queue.listDiskFiles() });
-    res.json({ success: true, jobs, stats: queue.stats(), files: queue.listDiskFiles() });
+    res.json({ success: true, jobs, stats: queue.stats(), files: queue.listDiskFiles(), lang });
   });
 });
 

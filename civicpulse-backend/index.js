@@ -459,7 +459,7 @@ const VOTER_SORTS = {
  */
 function voterWhere(query = {}, omit = null) {
   const c = [Prisma.sql`TRUE`];
-  const q = String(query.q || '').trim();
+  const q = String(query.q || '').trim().normalize('NFC');
   if (query.part && query.part !== 'all' && Number.isFinite(Number(query.part))) {
     c.push(Prisma.sql`part_no = ${Number(query.part)}`);
   }
@@ -497,13 +497,25 @@ function voterWhere(query = {}, omit = null) {
     }
   }
   if (q) {
-    const like = `%${q.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
-    const serial = /^\d{1,7}$/.test(q) ? Number(q) : null;
-    c.push(
-      serial != null
-        ? Prisma.sql`(name ILIKE ${like} OR epic ILIKE ${like} OR house_no ILIKE ${like} OR relation_name ILIKE ${like} OR section_name ILIKE ${like} OR array_to_string(phone, ' ') ILIKE ${like} OR serial_no = ${serial})`
-        : Prisma.sql`(name ILIKE ${like} OR epic ILIKE ${like} OR house_no ILIKE ${like} OR relation_name ILIKE ${like} OR section_name ILIKE ${like} OR array_to_string(phone, ' ') ILIKE ${like})`
-    );
+    // Drop IME zero-widths; NFC (applied above) so Telugu keyboards match OCR text
+    const needle = q.replace(/[\u200B-\u200D\uFEFF]/g, '');
+    const esc = (s) => s.replace(/[\\%_]/g, (m) => `\\${m}`);
+    const serial = /^\d{1,7}$/.test(needle) ? Number(needle) : null;
+    // Each token must appear somewhere (Telugu names are multi-word; order can differ)
+    const tokens = needle.split(/\s+/).map((w) => w.trim()).filter(Boolean).slice(0, 6);
+    const parts = (tokens.length ? tokens : [needle]).map((tok) => {
+      const like = `%${esc(tok)}%`;
+      return Prisma.sql`(
+        name ILIKE ${like} OR relation_name ILIKE ${like} OR section_name ILIKE ${like}
+        OR epic ILIKE ${like} OR house_no ILIKE ${like}
+        OR array_to_string(phone, ' ') ILIKE ${like}
+        OR position(${tok} in name) > 0
+        OR position(${tok} in coalesce(relation_name, '')) > 0
+        OR position(${tok} in coalesce(section_name, '')) > 0
+      )`;
+    });
+    const textMatch = Prisma.sql`(${Prisma.join(parts, ' AND ')})`;
+    c.push(serial != null ? Prisma.sql`(${textMatch} OR serial_no = ${serial})` : textMatch);
   }
   return Prisma.sql`WHERE ${Prisma.join(c, ' AND ')}`;
 }

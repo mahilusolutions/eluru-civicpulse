@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,700;1,9..40,400&family=Instrument+Serif:ital@0;1&display=swap"
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,700;1,9..40,400&family=Instrument+Serif:ital@0;1&family=Noto+Sans+Telugu:wght@400;500;700&display=swap"
       rel="stylesheet"
     />
     <link rel="stylesheet" href="styles.css" />
@@ -33,6 +33,14 @@
           <input id="fileInput" type="file" accept="application/pdf,.pdf" multiple hidden />
         </div>
         <div id="selectedList" class="selected-list" hidden></div>
+        <label class="lang-pick" for="ocrLang">
+          <span>OCR language</span>
+          <select id="ocrLang" name="lang">
+            <option value="auto" selected>Auto — Telugu + English (any upload)</option>
+            <option value="tel">Telugu (+ English)</option>
+            <option value="eng">English only</option>
+          </select>
+        </label>
         <button id="uploadBtn" class="btn" type="button" disabled>Upload &amp; queue</button>
         <div id="uploadProgressWrap" class="upload-progress" hidden>
           <div class="progress-bar"><div id="uploadProgressFill"></div></div>

@@ -553,7 +553,7 @@ export default function VotersPage() {
             type="search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search name, voter ID, house or road…"
+            placeholder="Search name (English or తెలుగు), voter ID, house…"
             className="w-full rounded-xl border border-[var(--line)] bg-[var(--bg)] py-2 pl-10 pr-3 text-sm text-[var(--ink)] outline-none transition placeholder:text-[var(--muted)] focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand)]/15"
           />
         </label>
